@@ -17,3 +17,6 @@
 - Add OD-7 integration slice 4/7: three-level streaming proxy construction,
   seven-component tile keys, complete-only level manifests, zoom selection,
   revision-aware invalidation, and bounded native proxy reads.
+- Add OD-7 integration slice 5/7: integer-only bounded tile partitioning,
+  interactive-first queue ordering, cancellation/stale-revision publication
+  gates, and one completing native blit per tile.

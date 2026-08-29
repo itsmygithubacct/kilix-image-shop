@@ -132,6 +132,18 @@ class NativeRuntimeBackend(Protocol):
         encoding: str,
     ) -> bytes: ...
 
+    def render_tile(
+        self,
+        source: object,
+        *,
+        source_rectangle: Rect,
+        destination_rectangle: Rect,
+        encoding: str,
+        source_definition: OperationDefinition,
+        crop_definition: OperationDefinition,
+        scale_definition: OperationDefinition,
+    ) -> bytes: ...
+
     def release_buffer(self, buffer: object) -> None: ...
 
     def release_graph(self, graph: object) -> None: ...
@@ -1150,6 +1162,31 @@ class _PyGiBackend:
                 raise InvalidGraph("proxy operation contains an unresolved reference")
             node.set_property(property_value.native_name, property_value.value)
 
+    @staticmethod
+    def _set_buffer_property(
+        node: object,
+        definition: OperationDefinition,
+        native_buffer: object,
+    ) -> None:
+        semantic = tuple(definition.semantic_properties)
+        if (
+            len(semantic) != 1
+            or semantic[0].semantic_name != "buffer"
+            or semantic[0].value_kind is not RegistryValueKind.BUFFER
+        ):
+            raise IncompatibleRuntime("native operation is not buffer-bound")
+        for property_specification in definition.properties:
+            if property_specification.source is PropertySource.DEFAULT:
+                continue
+            if property_specification.source is PropertySource.FIXED:
+                value = _binding_value(
+                    property_specification,
+                    property_specification.fixed_value,
+                )
+            else:
+                value = native_buffer
+            node.set_property(property_specification.native_name, value)
+
     def build_proxy(
         self,
         graph: object,
@@ -1211,24 +1248,7 @@ class _PyGiBackend:
         new_sink = sink is None
         if sink is None:
             sink = root.create_child(sink_definition.operation)
-        semantic = tuple(sink_definition.semantic_properties)
-        if (
-            len(semantic) != 1
-            or semantic[0].semantic_name != "buffer"
-            or semantic[0].value_kind is not RegistryValueKind.BUFFER
-        ):
-            raise IncompatibleRuntime("proxy sink definition is not buffer-bound")
-        for property_specification in sink_definition.properties:
-            if property_specification.source is PropertySource.DEFAULT:
-                continue
-            if property_specification.source is PropertySource.FIXED:
-                value = _binding_value(
-                    property_specification,
-                    property_specification.fixed_value,
-                )
-            else:
-                value = destination
-            sink.set_property(property_specification.native_name, value)
+        self._set_buffer_property(sink, sink_definition, destination)
         if new_sink:
             scale.connect_to(
                 scale_definition.output_pad,
@@ -1259,6 +1279,133 @@ class _PyGiBackend:
             self._gegl.AbyssPolicy.NONE,
         )
         return bytes(payload)
+
+    def render_tile(
+        self,
+        source: object,
+        *,
+        source_rectangle: Rect,
+        destination_rectangle: Rect,
+        encoding: str,
+        source_definition: OperationDefinition,
+        crop_definition: OperationDefinition,
+        scale_definition: OperationDefinition,
+    ) -> bytes:
+        if (
+            len(crop_definition.input_pads) != 1
+            or crop_definition.output_pad is None
+            or len(scale_definition.input_pads) != 1
+            or scale_definition.output_pad is None
+        ):
+            raise IncompatibleRuntime("tile adapter pads differ from the closed map")
+        owned_root = not isinstance(source, _NativeCompiledGraph)
+        if owned_root:
+            root = self._gegl.Node()
+            source_node = root.create_child(source_definition.operation)
+            self._set_buffer_property(source_node, source_definition, source)
+            output = source_node
+            output_pad = source_definition.output_pad
+            if output_pad is None:
+                raise IncompatibleRuntime("tile buffer source has no output pad")
+        else:
+            if source.root is None:
+                raise InvalidGraph("tile render requires a live compiled graph")
+            root = source.root
+            output = source.nodes.get(source.output_plan_id)
+            output_pad = source.output_pad
+            if output is None:
+                raise InvalidGraph("compiled tile source output is unavailable")
+            source_node = None
+        transient_nodes: list[object] = []
+        destination_buffer: object | None = None
+        try:
+            crop = root.create_child(crop_definition.operation)
+            transient_nodes.append(crop)
+            self._set_proxy_properties(
+                crop,
+                crop_definition,
+                {
+                    "x": source_rectangle.x,
+                    "y": source_rectangle.y,
+                    "width": source_rectangle.width,
+                    "height": source_rectangle.height,
+                },
+            )
+            output.connect_to(output_pad, crop, crop_definition.input_pads[0])
+            output = crop
+            output_pad = crop_definition.output_pad
+            if (
+                source_rectangle.width != destination_rectangle.width
+                or source_rectangle.height != destination_rectangle.height
+            ):
+                scale = root.create_child(scale_definition.operation)
+                transient_nodes.append(scale)
+                self._set_proxy_properties(
+                    scale,
+                    scale_definition,
+                    {
+                        "x": destination_rectangle.width / source_rectangle.width,
+                        "y": destination_rectangle.height / source_rectangle.height,
+                    },
+                )
+                output.connect_to(
+                    output_pad,
+                    scale,
+                    scale_definition.input_pads[0],
+                )
+                output = scale
+                output_pad = scale_definition.output_pad
+            bounding_box = output.get_bounding_box()
+            native_rectangle = self._gegl.Rectangle.new(
+                int(bounding_box.x),
+                int(bounding_box.y),
+                int(bounding_box.width),
+                int(bounding_box.height),
+            )
+            if (
+                native_rectangle.width != destination_rectangle.width
+                or native_rectangle.height != destination_rectangle.height
+            ):
+                raise IncompatibleRuntime(
+                    "native tile adapter extent differs from checked geometry"
+                )
+            destination_buffer = self._gegl.Buffer.new(
+                encoding,
+                native_rectangle.x,
+                native_rectangle.y,
+                native_rectangle.width,
+                native_rectangle.height,
+            )
+            output.blit_buffer(
+                destination_buffer,
+                native_rectangle,
+                0,
+                self._gegl.AbyssPolicy.NONE,
+            )
+            payload = destination_buffer.get(
+                native_rectangle,
+                1.0,
+                encoding,
+                self._gegl.AbyssPolicy.NONE,
+            )
+            return bytes(payload)
+        finally:
+            if not owned_root:
+                for node in reversed(transient_nodes):
+                    try:
+                        node.disconnect("input")
+                    except Exception:
+                        pass
+                    try:
+                        root.remove_child(node)
+                    except Exception:
+                        pass
+            transient_nodes.clear()
+            destination_buffer = None
+            if owned_root:
+                source_node = None
+                del root
+            gc.collect()
 
     def release_buffer(self, buffer: object) -> None:
         del buffer
@@ -1783,9 +1930,61 @@ class Od7ImageEngine:
             raise InvalidGraph("graph has not been compiled") from exc
 
     def render_tile(self, request: TileRequest, *, cancel: CancelToken) -> TileResult:
-        self._state()
+        backend, _ = self._state()
         cancel.raise_if_cancelled()
-        raise UnsupportedOperation("bounded native tile rendering enters integration slice 5/7")
+        if not isinstance(request, TileRequest):
+            raise InvalidGraph("tile render requires a typed request")
+        graph = self._graph_specs.get(request.graph_digest)
+        if graph is None:
+            raise InvalidGraph("tile request names an uncompiled graph")
+        if request.revision != graph.revision:
+            raise CancelledOrStaleWork("tile request revision is stale")
+        if request.spec != graph.output_spec:
+            raise InvalidGraph("tile request pixel spec differs from graph output")
+        self._policy.validate(request.spec)
+        graph_extent = graph.nodes[-1].parameters.destination
+        if request.level == 0:
+            source_extent = graph_extent
+            native_source = self._graphs[graph.digest]
+        else:
+            source_extent = _proxy_extent(graph_extent, request.level)
+            native_source = self._proxies.get((graph.digest, request.level))
+            if native_source is None:
+                raise InvalidGraph("tile request names an unavailable proxy level")
+        if not request.source.is_within(source_extent):
+            raise InvalidGraph("tile source rectangle leaves its selected render level")
+        registry = self._runtime._configuration.operation_registry
+        encoding = self._policy.native_encoding(request.spec)
+        started_ns = time.monotonic_ns()
+        try:
+            payload = backend.render_tile(
+                native_source,
+                source_rectangle=request.source,
+                destination_rectangle=request.destination,
+                encoding=encoding,
+                source_definition=registry.definition("source.pixel"),
+                crop_definition=registry.definition("destination.crop"),
+                scale_definition=registry.definition("destination.scale"),
+            )
+            elapsed_ns = time.monotonic_ns() - started_ns
+            cancel.raise_if_cancelled()
+            return TileResult(
+                request.source,
+                request.destination,
+                request.level,
+                request.spec,
+                request.revision,
+                ObjectId.from_bytes(payload),
+                elapsed_ns,
+                owned_bytes=payload,
+            )
+        except Exception as exc:
+            if isinstance(exc, EngineFailure):
+                raise
+            raise InternalEngineFailure(
+                "bounded native tile render failed",
+                diagnostic_ref="engine.tile-render",
+            ) from exc
 
     def build_proxy(
         self,

@@ -386,6 +386,8 @@ class FakeEngineTests(unittest.TestCase):
                 self.request(revision=STALE_REVISION),
                 cancel=self.cancel,
             )
+        with self.assertRaises(InvalidGraph):
+            self.engine.render_tile(self.request(level=1), cancel=self.cancel)
         unknown = TileRequest(
             ObjectId("0" * 64),
             Rect(0, 0, 1, 1),

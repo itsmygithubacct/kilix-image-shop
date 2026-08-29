@@ -37,6 +37,7 @@ from kilix_image_shop.engine.api import (
     InvalidGraph,
     PixelFormat,
     PixelSpec,
+    TileRequest,
     UnsupportedOperation,
 )
 from kilix_image_shop.engine.compatibility import (
@@ -96,9 +97,11 @@ class CompilerBackend:
         self.lifecycle: list[str] = []
         self.proxy_builds: list[tuple[int, Rect, str, object, object]] = []
         self.proxy_reads: list[tuple[object, Rect, str]] = []
+        self.tile_renders: list[tuple[object, Rect, Rect, str]] = []
         self.cancel_on_import: CancelToken | None = None
         self.cancel_on_compile: CancelToken | None = None
         self.cancel_on_proxy_build: CancelToken | None = None
+        self.cancel_on_render: CancelToken | None = None
         self.shutdown_count = 0
 
     def initialize(self) -> None:
@@ -166,6 +169,29 @@ class CompilerBackend:
         bytes_per_pixel = 1 if encoding == "Y u8" else 8
         return bytes((rectangle.x % 256,)) * (
             rectangle.width * rectangle.height * bytes_per_pixel
+        )
+
+    def render_tile(
+        self,
+        source: object,
+        *,
+        source_rectangle: Rect,
+        destination_rectangle: Rect,
+        encoding: str,
+        source_definition: object,
+        crop_definition: object,
+        scale_definition: object,
+    ) -> bytes:
+        self.tile_renders.append(
+            (source, source_rectangle, destination_rectangle, encoding)
+        )
+        if self.cancel_on_render is not None:
+            self.cancel_on_render.cancel()
+        bytes_per_pixel = 1 if encoding == "Y u8" else 8
+        return bytes((destination_rectangle.x % 256,)) * (
+            destination_rectangle.width
+            * destination_rectangle.height
+            * bytes_per_pixel
         )
 
     def release_buffer(self, buffer: object) -> None:
@@ -470,9 +496,36 @@ class ClosedCompilerTests(CompilerFixture):
         self.assertEqual(self.engine.invalidate_proxies((digest,)), 1)
         self.assertEqual(len(self.backend.released_buffers), released_before + 1)
         self.assertEqual(self.engine.invalidate_proxies((digest,)), 0)
+        level_zero = TileRequest(
+            digest,
+            Rect(0, 0, 2, 2),
+            Rect(0, 0, 1, 1),
+            0,
+            graph.output_spec,
+            graph.revision,
+        )
+        tile = self.engine.render_tile(level_zero, cancel=self.cancel)
+        self.assertEqual(len(tile.owned_bytes or b""), 8)
+        self.assertEqual(len(self.backend.tile_renders), 1)
         with self.assertRaises(UnsupportedOperation):
-            self.engine.render_tile(requests[0], cancel=self.cancel)
+            self.engine.export_tiles((level_zero,), cancel=self.cancel)
         self.assertIsInstance(self.engine, ImageEngine)
+
+    def test_cancelled_native_tile_call_publishes_zero_results(self) -> None:
+        graph, digest, _ = self.compile_full_graph()
+        token = CancelToken()
+        self.backend.cancel_on_render = token
+        request = TileRequest(
+            digest,
+            Rect(0, 0, 2, 2),
+            Rect(0, 0, 2, 2),
+            0,
+            graph.output_spec,
+            graph.revision,
+        )
+        with self.assertRaises(CancelledOrStaleWork):
+            self.engine.render_tile(request, cancel=token)
+        self.assertEqual(len(self.backend.tile_renders), 1)
 
     def test_cancelled_native_proxy_build_releases_buffer_and_publishes_zero_results(
         self,
@@ -522,6 +575,14 @@ class IccBoundaryTests(unittest.TestCase):
         self.assertNotIn("space_from_" + "icc", runtime)
         self.assertIn('graph.create_child("gegl:cast-space")', runtime)
         self.assertIn('graph.create_child("gegl:convert-space")', runtime)
+
+    def test_product_has_one_blit_call_site_and_zero_processor_call_sites(self) -> None:
+        runtime = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "src/kilix_image_shop/engine/runtime.py"
+        ).read_text()
+        self.assertEqual(runtime.count(".blit_" + "buffer("), 1)
+        self.assertNotIn("new_" + "processor", runtime)
 
 
 if __name__ == "__main__":

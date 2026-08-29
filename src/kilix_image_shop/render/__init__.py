@@ -17,6 +17,13 @@ from .proxy import (
     proxy_extent,
     select_proxy_level,
 )
+from .scheduler import (
+    CompletedBatch,
+    TileBatch,
+    TileScheduler,
+    WorkPriority,
+    partition_tiles,
+)
 
 __all__ = (
     "GraphDependency",
@@ -29,6 +36,11 @@ __all__ = (
     "ProxyKey",
     "ProxyManifest",
     "ProxyTile",
+    "CompletedBatch",
+    "TileBatch",
+    "TileScheduler",
+    "WorkPriority",
+    "partition_tiles",
     "plan_invalidation",
     "proxy_extent",
     "select_proxy_level",

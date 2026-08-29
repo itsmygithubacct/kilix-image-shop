@@ -914,7 +914,27 @@ class FakeImageEngine:
         cancel.raise_if_cancelled()
         return digest
 
-    def _render_tile(self, request: TileRequest, cancel: CancelToken) -> TileResult:
+    @staticmethod
+    def _selected_extent(graph: GraphSpec, level: int) -> Rect:
+        parameters = graph.nodes[-1].parameters
+        assert isinstance(parameters, DestinationCropScaleParameters)
+        extent = parameters.destination
+        if level == 0:
+            return extent
+        denominator = 1 << level
+        left = extent.x // denominator
+        top = extent.y // denominator
+        right = -(-(extent.x + extent.width) // denominator)
+        bottom = -(-(extent.y + extent.height) // denominator)
+        return Rect(left, top, right - left, bottom - top)
+
+    def _render_tile(
+        self,
+        request: TileRequest,
+        cancel: CancelToken,
+        *,
+        proxy_build: bool = False,
+    ) -> TileResult:
         cancel.raise_if_cancelled()
         graph = self._graphs.get(request.graph_digest)
         if graph is None:
@@ -924,6 +944,16 @@ class FakeImageEngine:
         if request.spec != graph.output_spec:
             raise InvalidGraph("tile request pixel spec differs from graph output")
         self._validate_spec(request.spec)
+        if not proxy_build:
+            if request.level > 0 and (
+                request.graph_digest,
+                request.level,
+            ) not in self._proxy_results:
+                raise InvalidGraph("tile request names an unavailable proxy level")
+            if not request.source.is_within(
+                self._selected_extent(graph, request.level)
+            ):
+                raise InvalidGraph("tile source leaves its selected render level")
 
         byte_count = (
             request.destination.width
@@ -993,7 +1023,9 @@ class FakeImageEngine:
         existing = self._proxy_results.get(key)
         if existing is not None:
             return existing
-        results = tuple(self._render_tile(item, cancel) for item in requests)
+        results = tuple(
+            self._render_tile(item, cancel, proxy_build=True) for item in requests
+        )
         cancel.raise_if_cancelled()
         self._proxy_results[key] = results
         return results
