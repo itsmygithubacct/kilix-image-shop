@@ -1,7 +1,7 @@
 # Kilix Image Shop
 
 Kilix Image Shop is the local-first image editor planned for Plebian OS 0.2.1.
-The repository contains its immutable document-domain slice and the first six
+The repository contains its immutable document-domain slice and all seven
 engine-integration slices. The domain provides typed content identities, checked
 geometry and decode budgets, closed layer/mask/provenance values, the
 `kilix.imageshop.project/v1` schema, canonical serialization, and
@@ -21,9 +21,11 @@ integer-only tile partitioning, the four-class priority queue, revision and
 cancellation publication gates, and one completing `blit_buffer` call for each
 bounded native tile. The sixth slice adds immutable copy-on-write foreground
 masks with canonical 256×256 sparse-tile identities and an all-or-nothing
-full-resolution tile worker. Atomic encoded-file replacement remains owned by
-the later export-pipeline slice; persistence, history, presentation, and
-provider adapters likewise enter as separate reviewed slices.
+full-resolution tile worker. The seventh slice publishes nine safe diagnostic
+groups and adds a fail-closed binder for the frozen fixture, package, harness,
+and campaign carriers. Atomic encoded-file replacement remains owned by the
+later export-pipeline slice; persistence, history, presentation, and provider
+adapters likewise enter as separate reviewed slices.
 
 ## Product boundary
 
@@ -61,6 +63,10 @@ bindings remain visible, verifies that boundary, and performs an offline frozen
 sync. The Python runtime dependency population remains 0/0. Engine-neutral
 modules import 0/1 GI modules, and package import eagerly loads 0/1 GI modules;
 the guarded OD-7 runtime owns the sole native import boundary.
+
+The qualification-carrier verifier is documented in `QUALIFICATION.md`. Its
+unit fixtures demonstrate structure and refusal behavior only; they are not H0
+release evidence.
 
 ## Repository status
 

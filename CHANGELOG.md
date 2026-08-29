@@ -23,3 +23,6 @@
 - Add OD-7 integration slice 6/7: canonical sparse mask-tile identities,
   before-digest-bound copy-on-write Y-u8 edits, and an all-or-nothing bounded
   full-resolution tile worker.
+- Add OD-7 integration slice 7/7: nine safe resource-diagnostic groups and a
+  fail-closed owner-carrier binder for fixtures, packages, harness corrections,
+  campaign declarations, unsafe paths, and exact content identities.

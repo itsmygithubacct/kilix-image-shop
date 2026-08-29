@@ -20,6 +20,7 @@ from kilix_image_shop.engine.api import (
     ColourConversionParameters,
     DecodeRefusal,
     DestinationCropScaleParameters,
+    EngineDiagnostics,
     EngineFailureCode,
     FakeImageEngine,
     GraphNodeKind,
@@ -375,6 +376,16 @@ class FakeEngineTests(unittest.TestCase):
         )
         self.assertEqual(repeated, self.pixel_buffer)
         self.assertEqual(self.pixel_buffer.content_digest, ObjectId.from_bytes(self.pixel_payload))
+
+    def test_diagnostics_publish_exactly_nine_safe_resource_groups(self) -> None:
+        diagnostics = self.engine.diagnostics()
+        self.assertIsInstance(diagnostics, EngineDiagnostics)
+        self.assertEqual(len(dataclasses.fields(EngineDiagnostics)), 9)
+        self.assertEqual(diagnostics.buffers.count, 3)
+        self.assertEqual(diagnostics.graph_cache_count, 1)
+        self.assertEqual(diagnostics.proxies.complete_count, 0)
+        self.assertEqual(diagnostics.queue.queued_tiles, 0)
+        self.assertNotIn(repr(self.pixel_payload), repr(diagnostics))
 
     def test_fake_tile_output_is_owned_exact_and_deterministic(self) -> None:
         request = self.request()

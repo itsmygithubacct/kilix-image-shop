@@ -31,12 +31,15 @@ from kilix_image_shop.domain.identifiers import ObjectId, RevisionId
 from .api import (
     AdjustmentParameters,
     AffineTransformCropParameters,
+    BufferInventory,
+    BufferInventoryEntry,
     BufferRef,
     CancelToken,
     ColourConversionParameters,
     DecodeRefusal,
     DestinationCropScaleParameters,
     EngineCapabilities,
+    EngineDiagnostics,
     EngineFailure,
     GraphNodeSpec,
     GraphNodeKind,
@@ -52,16 +55,22 @@ from .api import (
     PixelFormat,
     PixelSourceParameters,
     PixelSpec,
+    ProcessMemoryDiagnostics,
+    ProxyDiagnostics,
+    QueueDiagnostics,
     ResourceExhaustion,
     TextSourceParameters,
     TileRequest,
     TileResult,
+    SwapDiagnostics,
+    TimingDiagnostics,
     UnavailableGroup,
     mask_digest_index,
     mask_manifest_digest,
 )
 from .compatibility import (
     GI_ORIGIN,
+    H0_TILE_CACHE_BYTES,
     NativeObservation,
     OperationDefinition,
     OperationProperty,
@@ -1783,6 +1792,53 @@ def _validate_proxy_requests(
     return level, expected_extent
 
 
+def _process_memory_diagnostics() -> ProcessMemoryDiagnostics:
+    try:
+        payload = pathlib.Path("/proc/self/status").read_text(encoding="ascii")
+        values: dict[str, int] = {}
+        for line in payload.splitlines():
+            if line.startswith(("VmRSS:", "VmHWM:")):
+                name, amount, unit = line.split()
+                if unit != "kB":
+                    raise ValueError("unexpected process-memory unit")
+                values[name.rstrip(":")] = int(amount) * 1024
+        resident = values["VmRSS"]
+        peak = values["VmHWM"]
+    except (OSError, UnicodeDecodeError, ValueError, KeyError) as exc:
+        raise InternalEngineFailure(
+            "process memory diagnostics are unavailable",
+            diagnostic_ref="engine.diagnostics-memory",
+        ) from exc
+    return ProcessMemoryDiagnostics(resident, max(resident, peak))
+
+
+def _swap_diagnostics(session: _OwnedSession) -> SwapDiagnostics:
+    bytes_used = 0
+    file_count = 0
+    try:
+        for root, directories, files in os.walk(session.path, followlinks=False):
+            root_path = pathlib.Path(root)
+            directories[:] = [
+                name
+                for name in directories
+                if name != "profiles"
+                and not stat.S_ISLNK((root_path / name).lstat().st_mode)
+            ]
+            for name in files:
+                if name in {"LOCK", "OWNER.json"}:
+                    continue
+                metadata = (root_path / name).lstat()
+                if stat.S_ISREG(metadata.st_mode):
+                    bytes_used += metadata.st_size
+                    file_count += 1
+    except OSError as exc:
+        raise InternalEngineFailure(
+            "swap diagnostics are unavailable",
+            diagnostic_ref="engine.diagnostics-swap",
+        ) from exc
+    return SwapDiagnostics(bytes_used, file_count, None)
+
+
 class Od7ImageEngine:
     """H0 GEGL/babl engine whose native handles remain inside this module."""
 
@@ -1807,6 +1863,8 @@ class Od7ImageEngine:
         self._proxy_results: dict[
             tuple[ObjectId, int], tuple[TileResult, ...]
         ] = {}
+        self._running_tiles = 0
+        self._tile_timings: list[int] = []
 
     def _state(self) -> tuple[NativeRuntimeBackend, _OwnedSession]:
         if self._capabilities is None:
@@ -2086,17 +2144,23 @@ class Od7ImageEngine:
         registry = self._runtime._configuration.operation_registry
         encoding = self._policy.native_encoding(request.spec)
         started_ns = time.monotonic_ns()
+        self._running_tiles += 1
         try:
-            payload = backend.render_tile(
-                native_source,
-                source_rectangle=request.source,
-                destination_rectangle=request.destination,
-                encoding=encoding,
-                source_definition=registry.definition("source.pixel"),
-                crop_definition=registry.definition("destination.crop"),
-                scale_definition=registry.definition("destination.scale"),
-            )
-            elapsed_ns = time.monotonic_ns() - started_ns
+            try:
+                payload = backend.render_tile(
+                    native_source,
+                    source_rectangle=request.source,
+                    destination_rectangle=request.destination,
+                    encoding=encoding,
+                    source_definition=registry.definition("source.pixel"),
+                    crop_definition=registry.definition("destination.crop"),
+                    scale_definition=registry.definition("destination.scale"),
+                )
+                elapsed_ns = time.monotonic_ns() - started_ns
+                self._tile_timings.append(elapsed_ns)
+                del self._tile_timings[:-32]
+            finally:
+                self._running_tiles -= 1
             cancel.raise_if_cancelled()
             return TileResult(
                 request.source,
@@ -2224,6 +2288,46 @@ class Od7ImageEngine:
             ) from failure
         return len(selected)
 
+    def diagnostics(self) -> EngineDiagnostics:
+        _, session = self._state()
+        entries = tuple(
+            BufferInventoryEntry(reference.extent, reference.spec, reference.revision)
+            for _, (reference, _) in sorted(self._buffers.items())
+        )
+        proxy_items = tuple(
+            sorted(
+                self._proxy_results.items(),
+                key=lambda item: (item[0][0].value, item[0][1]),
+            )
+        )
+        timings = tuple(self._tile_timings)
+        return EngineDiagnostics(
+            _process_memory_diagnostics(),
+            H0_TILE_CACHE_BYTES,
+            _swap_diagnostics(session),
+            BufferInventory(
+                entries,
+                sum(item.extent.width * item.extent.height for item in entries),
+            ),
+            ProxyDiagnostics(
+                tuple(sorted(key[1] for key, _ in proxy_items)),
+                sum(
+                    len(result.owned_bytes or b"")
+                    for _, results in proxy_items
+                    for result in results
+                ),
+                len(proxy_items),
+            ),
+            QueueDiagnostics(0, self._running_tiles),
+            len(self._graphs),
+            0,
+            TimingDiagnostics(
+                None if not timings else timings[-1],
+                None if not timings else sum(timings) // len(timings),
+                len(timings),
+            ),
+        )
+
     def export_tiles(
         self,
         requests: tuple[TileRequest, ...],
@@ -2300,6 +2404,7 @@ class Od7ImageEngine:
         gc.collect()
         self._mask_indexes.clear()
         self._proxy_results.clear()
+        self._tile_timings.clear()
         self._plans.clear()
         self._graph_specs.clear()
         self._profiles.clear()

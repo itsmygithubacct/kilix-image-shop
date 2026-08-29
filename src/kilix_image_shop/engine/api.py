@@ -830,6 +830,153 @@ class EngineCapabilities:
             raise IncompatibleRuntime("engine tile envelope is incompatible")
 
 
+@dataclass(frozen=True, slots=True)
+class ProcessMemoryDiagnostics:
+    resident_bytes: int
+    peak_bytes: int
+
+    def __post_init__(self) -> None:
+        for value in (self.resident_bytes, self.peak_bytes):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise InternalEngineFailure("process memory diagnostic is malformed")
+        if self.peak_bytes < self.resident_bytes:
+            raise InternalEngineFailure("process peak memory is below resident memory")
+
+
+@dataclass(frozen=True, slots=True)
+class SwapDiagnostics:
+    bytes_used: int
+    file_count: int
+    quota_bytes: int | None
+
+    def __post_init__(self) -> None:
+        for value in (self.bytes_used, self.file_count):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise InternalEngineFailure("swap diagnostic is malformed")
+        if self.quota_bytes is not None and (
+            isinstance(self.quota_bytes, bool)
+            or not isinstance(self.quota_bytes, int)
+            or self.quota_bytes <= 0
+        ):
+            raise InternalEngineFailure("swap quota diagnostic is malformed")
+
+
+@dataclass(frozen=True, slots=True)
+class BufferInventoryEntry:
+    extent: Rect
+    spec: PixelSpec
+    revision: RevisionId
+
+    def __post_init__(self) -> None:
+        _require_type(self.extent, Rect, "buffer diagnostic extent")
+        _require_type(self.spec, PixelSpec, "buffer diagnostic pixel spec")
+        _require_type(self.revision, RevisionId, "buffer diagnostic revision")
+
+
+@dataclass(frozen=True, slots=True)
+class BufferInventory:
+    entries: tuple[BufferInventoryEntry, ...]
+    total_pixels: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entries, tuple) or any(
+            not isinstance(item, BufferInventoryEntry) for item in self.entries
+        ):
+            raise InternalEngineFailure("buffer inventory is malformed")
+        expected = sum(item.extent.width * item.extent.height for item in self.entries)
+        if self.total_pixels != expected:
+            raise InternalEngineFailure("buffer inventory pixel count differs")
+
+    @property
+    def count(self) -> int:
+        return len(self.entries)
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyDiagnostics:
+    levels: tuple[int, ...]
+    bytes_used: int
+    complete_count: int
+
+    def __post_init__(self) -> None:
+        if self.levels != tuple(sorted(self.levels)) or any(
+            item not in {1, 2, 3} for item in self.levels
+        ):
+            raise InternalEngineFailure("proxy level diagnostic is malformed")
+        for value in (self.bytes_used, self.complete_count):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise InternalEngineFailure("proxy diagnostic count is malformed")
+        if self.complete_count != len(self.levels):
+            raise InternalEngineFailure("proxy diagnostic completion count differs")
+
+
+@dataclass(frozen=True, slots=True)
+class QueueDiagnostics:
+    queued_tiles: int
+    running_tiles: int
+
+    def __post_init__(self) -> None:
+        for value in (self.queued_tiles, self.running_tiles):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise InternalEngineFailure("tile queue diagnostic is malformed")
+
+
+@dataclass(frozen=True, slots=True)
+class TimingDiagnostics:
+    last_tile_ns: int | None
+    rolling_mean_ns: int | None
+    sample_count: int
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.sample_count, bool)
+            or not isinstance(self.sample_count, int)
+            or not 0 <= self.sample_count <= 32
+        ):
+            raise InternalEngineFailure("tile timing sample count is malformed")
+        if self.sample_count == 0:
+            if self.last_tile_ns is not None or self.rolling_mean_ns is not None:
+                raise InternalEngineFailure("empty tile timing window has values")
+            return
+        for value in (self.last_tile_ns, self.rolling_mean_ns):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise InternalEngineFailure("tile timing diagnostic is malformed")
+
+
+@dataclass(frozen=True, slots=True)
+class EngineDiagnostics:
+    """The exact 9/9 safe resource groups exposed by an engine adapter."""
+
+    process_memory: ProcessMemoryDiagnostics
+    tile_cache_ceiling_bytes: int
+    swap: SwapDiagnostics
+    buffers: BufferInventory
+    proxies: ProxyDiagnostics
+    queue: QueueDiagnostics
+    graph_cache_count: int
+    export_staging_bytes: int
+    timing: TimingDiagnostics
+
+    def __post_init__(self) -> None:
+        expected_types = (
+            (self.process_memory, ProcessMemoryDiagnostics),
+            (self.swap, SwapDiagnostics),
+            (self.buffers, BufferInventory),
+            (self.proxies, ProxyDiagnostics),
+            (self.queue, QueueDiagnostics),
+            (self.timing, TimingDiagnostics),
+        )
+        if any(not isinstance(value, expected) for value, expected in expected_types):
+            raise InternalEngineFailure("engine diagnostic group is untyped")
+        for value in (
+            self.tile_cache_ceiling_bytes,
+            self.graph_cache_count,
+            self.export_staging_bytes,
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise InternalEngineFailure("engine diagnostic scalar is malformed")
+
+
 @runtime_checkable
 class ImageEngine(Protocol):
     def start(self) -> EngineCapabilities: ...
@@ -874,6 +1021,8 @@ class ImageEngine(Protocol):
 
     def invalidate_proxies(self, graph_digests: tuple[ObjectId, ...]) -> int: ...
 
+    def diagnostics(self) -> EngineDiagnostics: ...
+
     def export_tiles(
         self,
         requests: tuple[TileRequest, ...],
@@ -909,6 +1058,7 @@ class FakeImageEngine:
         self._proxy_results: dict[
             tuple[ObjectId, int], tuple[TileResult, ...]
         ] = {}
+        self._tile_timings: list[int] = []
 
     def _bind_or_check_owner(self) -> None:
         current = threading.get_ident()
@@ -1195,7 +1345,10 @@ class FakeImageEngine:
     def render_tile(self, request: TileRequest, *, cancel: CancelToken) -> TileResult:
         self._require_started()
         _require_type(request, TileRequest, "tile request")
-        return self._render_tile(request, cancel)
+        result = self._render_tile(request, cancel)
+        self._tile_timings.append(result.elapsed_ns)
+        del self._tile_timings[:-32]
+        return result
 
     def build_proxy(
         self,
@@ -1255,6 +1408,43 @@ class FakeImageEngine:
             del self._proxy_results[key]
         return len(removed)
 
+    def diagnostics(self) -> EngineDiagnostics:
+        self._require_started()
+        entries = tuple(
+            BufferInventoryEntry(item.extent, item.spec, item.revision)
+            for _, item in sorted(self._buffers.items())
+        )
+        proxy_items = tuple(
+            sorted(self._proxy_results.items(), key=lambda item: (item[0][0].value, item[0][1]))
+        )
+        timings = tuple(self._tile_timings)
+        return EngineDiagnostics(
+            ProcessMemoryDiagnostics(0, 0),
+            0,
+            SwapDiagnostics(0, 0, None),
+            BufferInventory(
+                entries,
+                sum(item.extent.width * item.extent.height for item in entries),
+            ),
+            ProxyDiagnostics(
+                tuple(sorted(key[1] for key, _ in proxy_items)),
+                sum(
+                    len(result.owned_bytes or b"")
+                    for _, results in proxy_items
+                    for result in results
+                ),
+                len(proxy_items),
+            ),
+            QueueDiagnostics(0, 0),
+            len(self._graphs),
+            0,
+            TimingDiagnostics(
+                None if not timings else timings[-1],
+                None if not timings else sum(timings) // len(timings),
+                len(timings),
+            ),
+        )
+
     def export_tiles(
         self,
         requests: tuple[TileRequest, ...],
@@ -1278,6 +1468,7 @@ class FakeImageEngine:
         self._graphs.clear()
         self._profiles.clear()
         self._proxy_results.clear()
+        self._tile_timings.clear()
         self._started = False
         self._closed = True
 
@@ -1286,12 +1477,15 @@ __all__ = (
     "AdjustmentParameters",
     "AffineTransformCropParameters",
     "BufferRef",
+    "BufferInventory",
+    "BufferInventoryEntry",
     "CancelToken",
     "CancelledOrStaleWork",
     "ColourConversionParameters",
     "DecodeRefusal",
     "DestinationCropScaleParameters",
     "EngineCapabilities",
+    "EngineDiagnostics",
     "EngineFailure",
     "EngineFailureCode",
     "FakeImageEngine",
@@ -1312,8 +1506,13 @@ __all__ = (
     "PixelFormat",
     "PixelSourceParameters",
     "PixelSpec",
+    "ProcessMemoryDiagnostics",
+    "ProxyDiagnostics",
+    "QueueDiagnostics",
     "ResourceExhaustion",
     "TextSourceParameters",
+    "SwapDiagnostics",
+    "TimingDiagnostics",
     "TileRequest",
     "TileResult",
     "UnavailableGroup",
