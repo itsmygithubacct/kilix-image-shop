@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kilix-image-shop"
+version = "0.2.1"
+description = "Local-first non-destructive image editor for Kilix"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"]
+authors = [
+  { name = "itsmygithubacct", email = "itsmygithubacct@users.noreply.github.com" },
+]
+dependencies = []
+
+[dependency-groups]
+build = ["hatchling==1.27.0"]
+
+[tool.uv]
+required-version = "==0.12.5"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kilix_image_shop"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
