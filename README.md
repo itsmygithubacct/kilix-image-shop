@@ -1,11 +1,15 @@
 # Kilix Image Shop
 
 Kilix Image Shop is the local-first image editor planned for Plebian OS 0.2.1.
-The repository now contains its immutable document-domain slice: typed content
-identities, checked geometry and decode budgets, closed layer/mask/provenance
-values, the `kilix.imageshop.project/v1` schema, canonical serialization, and
-revision-checked pure command reduction. Native rendering, persistence,
-history, presentation, and provider adapters enter as separate reviewed slices.
+The repository contains its immutable document-domain slice and the first
+engine-integration slice. The domain provides typed content identities, checked
+geometry and decode budgets, closed layer/mask/provenance values, the
+`kilix.imageshop.project/v1` schema, canonical serialization, and
+revision-checked pure command reduction. The engine boundary provides closed
+engine-neutral graph, buffer, tile, cancellation, and H0 format contracts plus
+a deterministic conformance fake. Native GI initialization, rendering,
+persistence, history, presentation, and provider adapters enter as separate
+reviewed slices.
 
 ## Product boundary
 
@@ -40,7 +44,9 @@ make check
 
 `setup` creates a system-site virtual environment so the later Debian GI
 bindings remain visible, verifies that boundary, and performs an offline frozen
-sync. The initial Python runtime dependency population is 0/0.
+sync. The Python runtime dependency population remains 0/0. Engine-neutral
+modules import 0/1 GI modules; the later guarded OD-7 runtime adapter owns that
+sole native import boundary.
 
 ## Repository status
 
