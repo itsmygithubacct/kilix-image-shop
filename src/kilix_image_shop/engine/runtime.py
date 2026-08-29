@@ -19,6 +19,7 @@ import shutil
 import stat
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable, Protocol, TypeAlias
@@ -112,6 +113,24 @@ class NativeRuntimeBackend(Protocol):
         buffers: dict[str, object],
         profiles: dict[ObjectId, pathlib.Path],
     ) -> object: ...
+
+    def build_proxy(
+        self,
+        graph: object,
+        *,
+        level: int,
+        expected_extent: Rect,
+        encoding: str,
+        scale_definition: OperationDefinition,
+        sink_definition: OperationDefinition,
+    ) -> object: ...
+
+    def read_buffer(
+        self,
+        buffer: object,
+        rectangle: Rect,
+        encoding: str,
+    ) -> bytes: ...
 
     def release_buffer(self, buffer: object) -> None: ...
 
@@ -1105,7 +1124,141 @@ class _PyGiBackend:
             del graph
             gc.collect()
             raise
-        return _NativeCompiledGraph(graph, nodes, plan.output_plan_id)
+        output = next(
+            item for item in plan.nodes if item.plan_id == plan.output_plan_id
+        )
+        if output.output_pad is None:
+            nodes.clear()
+            del graph
+            gc.collect()
+            raise InvalidGraph("compiled graph output has no native output pad")
+        return _NativeCompiledGraph(
+            graph,
+            nodes,
+            plan.output_plan_id,
+            output.output_pad,
+        )
+
+    @staticmethod
+    def _set_proxy_properties(
+        node: object,
+        definition: OperationDefinition,
+        semantic_values: dict[str, object],
+    ) -> None:
+        for property_value in _bind_properties(definition, semantic_values):
+            if isinstance(property_value.value, (BufferBinding, ProfileBinding)):
+                raise InvalidGraph("proxy operation contains an unresolved reference")
+            node.set_property(property_value.native_name, property_value.value)
+
+    def build_proxy(
+        self,
+        graph: object,
+        *,
+        level: int,
+        expected_extent: Rect,
+        encoding: str,
+        scale_definition: OperationDefinition,
+        sink_definition: OperationDefinition,
+    ) -> object:
+        if not isinstance(graph, _NativeCompiledGraph) or graph.root is None:
+            raise InvalidGraph("proxy build requires a live compiled graph")
+        if level not in {1, 2, 3}:
+            raise InvalidGraph("proxy build received an invalid level")
+        root = graph.root
+        output = graph.nodes.get(graph.output_plan_id)
+        if output is None:
+            raise InvalidGraph("compiled graph output is unavailable")
+        if (
+            len(scale_definition.input_pads) != 1
+            or scale_definition.output_pad is None
+            or len(sink_definition.input_pads) != 1
+            or sink_definition.output_pad is not None
+        ):
+            raise IncompatibleRuntime("proxy operation pads differ from the closed map")
+        scale_key = f"__proxy_{level}_scale"
+        sink_key = f"__proxy_{level}_sink"
+        scale = graph.nodes.get(scale_key)
+        if scale is None:
+            scale = root.create_child(scale_definition.operation)
+            ratio = 1.0 / (1 << level)
+            self._set_proxy_properties(
+                scale,
+                scale_definition,
+                {"x": ratio, "y": ratio},
+            )
+            output.connect_to(
+                graph.output_pad,
+                scale,
+                scale_definition.input_pads[0],
+            )
+        bounding_box = scale.get_bounding_box()
+        observed_extent = Rect(
+            int(bounding_box.x),
+            int(bounding_box.y),
+            int(bounding_box.width),
+            int(bounding_box.height),
+        )
+        if observed_extent != expected_extent:
+            raise IncompatibleRuntime("native proxy extent differs from checked geometry")
+        destination = self._gegl.Buffer.new(
+            encoding,
+            expected_extent.x,
+            expected_extent.y,
+            expected_extent.width,
+            expected_extent.height,
+        )
+        sink = graph.nodes.get(sink_key)
+        new_sink = sink is None
+        if sink is None:
+            sink = root.create_child(sink_definition.operation)
+        semantic = tuple(sink_definition.semantic_properties)
+        if (
+            len(semantic) != 1
+            or semantic[0].semantic_name != "buffer"
+            or semantic[0].value_kind is not RegistryValueKind.BUFFER
+        ):
+            raise IncompatibleRuntime("proxy sink definition is not buffer-bound")
+        for property_specification in sink_definition.properties:
+            if property_specification.source is PropertySource.DEFAULT:
+                continue
+            if property_specification.source is PropertySource.FIXED:
+                value = _binding_value(
+                    property_specification,
+                    property_specification.fixed_value,
+                )
+            else:
+                value = destination
+            sink.set_property(property_specification.native_name, value)
+        if new_sink:
+            scale.connect_to(
+                scale_definition.output_pad,
+                sink,
+                sink_definition.input_pads[0],
+            )
+        sink.process()
+        graph.nodes[scale_key] = scale
+        graph.nodes[sink_key] = sink
+        return destination
+
+    def read_buffer(
+        self,
+        buffer: object,
+        rectangle: Rect,
+        encoding: str,
+    ) -> bytes:
+        native_rectangle = self._gegl.Rectangle.new(
+            rectangle.x,
+            rectangle.y,
+            rectangle.width,
+            rectangle.height,
+        )
+        payload = buffer.get(
+            native_rectangle,
+            1.0,
+            encoding,
+            self._gegl.AbyssPolicy.NONE,
+        )
+        return bytes(payload)
 
     def release_buffer(self, buffer: object) -> None:
         del buffer
@@ -1142,6 +1295,7 @@ class _NativeCompiledGraph:
     root: object | None
     nodes: dict[str, object]
     output_plan_id: str
+    output_pad: str
 
 
 def _load_pygi() -> NativeRuntimeBackend:
@@ -1367,6 +1521,90 @@ class ImageRuntime:
         return self._native, self._session
 
 
+def _proxy_extent(source: Rect, level: int) -> Rect:
+    if level not in {1, 2, 3}:
+        raise InvalidGraph("proxy level must be in [1, 3]")
+    denominator = 1 << level
+    left = source.x // denominator
+    top = source.y // denominator
+    right = -(-(source.x + source.width) // denominator)
+    bottom = -(-(source.y + source.height) // denominator)
+    return Rect(left, top, right - left, bottom - top)
+
+
+def _rectangles_intersect(left: Rect, right: Rect) -> bool:
+    return not (
+        left.x + left.width <= right.x
+        or right.x + right.width <= left.x
+        or left.y + left.height <= right.y
+        or right.y + right.height <= left.y
+    )
+
+
+def _validate_proxy_requests(
+    graph: GraphSpec,
+    requests: tuple[TileRequest, ...],
+) -> tuple[int, Rect]:
+    if not isinstance(requests, tuple) or not requests or any(
+        not isinstance(item, TileRequest) for item in requests
+    ):
+        raise InvalidGraph("proxy requests must be a non-empty immutable typed tuple")
+    level = requests[0].level
+    expected_extent = _proxy_extent(
+        graph.nodes[-1].parameters.destination,
+        level,
+    )
+    expected_identity = (
+        graph.digest,
+        level,
+        graph.output_spec,
+        graph.revision,
+    )
+    rectangles: list[Rect] = []
+    denominator = 1 << level
+    source_extent = graph.nodes[-1].parameters.destination
+    for request in requests:
+        if (
+            request.graph_digest,
+            request.level,
+            request.spec,
+            request.revision,
+        ) != expected_identity:
+            raise InvalidGraph("proxy requests do not share the compiled graph identity")
+        if not request.destination.is_within(expected_extent):
+            raise InvalidGraph("proxy tile leaves the checked level extent")
+        source_left = max(source_extent.x, request.destination.x * denominator)
+        source_top = max(source_extent.y, request.destination.y * denominator)
+        source_right = min(
+            source_extent.x + source_extent.width,
+            (request.destination.x + request.destination.width) * denominator,
+        )
+        source_bottom = min(
+            source_extent.y + source_extent.height,
+            (request.destination.y + request.destination.height) * denominator,
+        )
+        if request.source != Rect(
+            source_left,
+            source_top,
+            source_right - source_left,
+            source_bottom - source_top,
+        ):
+            raise InvalidGraph("proxy tile source mapping differs from checked scaling")
+        if any(_rectangles_intersect(request.destination, item) for item in rectangles):
+            raise InvalidGraph("proxy tile requests overlap")
+        rectangles.append(request.destination)
+    keys = tuple(
+        (item.y, item.x, item.height, item.width) for item in rectangles
+    )
+    if keys != tuple(sorted(set(keys))):
+        raise InvalidGraph("proxy tile requests must be sorted and unique")
+    if sum(item.width * item.height for item in rectangles) != (
+        expected_extent.width * expected_extent.height
+    ):
+        raise InvalidGraph("proxy requests do not cover one complete level")
+    return level, expected_extent
+
+
 class Od7ImageEngine:
     """H0 GEGL/babl engine whose native handles remain inside this module."""
 
@@ -1385,6 +1623,11 @@ class Od7ImageEngine:
         self._buffers: dict[str, tuple[BufferRef, object]] = {}
         self._graphs: dict[ObjectId, object] = {}
         self._plans: dict[ObjectId, CompiledGraphPlan] = {}
+        self._graph_specs: dict[ObjectId, GraphSpec] = {}
+        self._proxies: dict[tuple[ObjectId, int], object] = {}
+        self._proxy_results: dict[
+            tuple[ObjectId, int], tuple[TileResult, ...]
+        ] = {}
 
     def _state(self) -> tuple[NativeRuntimeBackend, _OwnedSession]:
         if self._capabilities is None:
@@ -1529,6 +1772,7 @@ class Od7ImageEngine:
             ) from exc
         self._graphs[graph.digest] = native
         self._plans[graph.digest] = plan
+        self._graph_specs[graph.digest] = graph
         return graph.digest
 
     def compiled_plan(self, graph_digest: ObjectId) -> CompiledGraphPlan:
@@ -1549,9 +1793,107 @@ class Od7ImageEngine:
         *,
         cancel: CancelToken,
     ) -> tuple[TileResult, ...]:
-        self._state()
+        backend, _ = self._state()
         cancel.raise_if_cancelled()
-        raise UnsupportedOperation("native proxy construction enters integration slice 4/7")
+        if not isinstance(requests, tuple) or not requests:
+            raise InvalidGraph("proxy work requires a non-empty immutable request tuple")
+        if any(not isinstance(item, TileRequest) for item in requests):
+            raise InvalidGraph("proxy requests must be typed tile requests")
+        graph = self._graph_specs.get(requests[0].graph_digest)
+        if graph is None:
+            raise InvalidGraph("proxy request names an uncompiled graph")
+        level, extent = _validate_proxy_requests(graph, requests)
+        cache_key = (graph.digest, level)
+        existing = self._proxy_results.get(cache_key)
+        if existing is not None:
+            return existing
+        native_graph = self._graphs[graph.digest]
+        registry = self._runtime._configuration.operation_registry
+        scale_definition = registry.definition("destination.scale")
+        sink_definition = registry.definition("sink.write-buffer")
+        encoding = self._policy.native_encoding(graph.output_spec)
+        native_proxy: object | None = None
+        try:
+            cancel.raise_if_cancelled()
+            native_proxy = backend.build_proxy(
+                native_graph,
+                level=level,
+                expected_extent=extent,
+                encoding=encoding,
+                scale_definition=scale_definition,
+                sink_definition=sink_definition,
+            )
+            cancel.raise_if_cancelled()
+            completed: list[TileResult] = []
+            for request in requests:
+                cancel.raise_if_cancelled()
+                started_ns = time.monotonic_ns()
+                payload = backend.read_buffer(
+                    native_proxy,
+                    request.destination,
+                    encoding,
+                )
+                elapsed_ns = time.monotonic_ns() - started_ns
+                cancel.raise_if_cancelled()
+                completed.append(
+                    TileResult(
+                        request.source,
+                        request.destination,
+                        request.level,
+                        request.spec,
+                        request.revision,
+                        ObjectId.from_bytes(payload),
+                        elapsed_ns,
+                        owned_bytes=payload,
+                    )
+                )
+            cancel.raise_if_cancelled()
+        except Exception as exc:
+            if native_proxy is not None:
+                try:
+                    backend.release_buffer(native_proxy)
+                except Exception:
+                    pass
+            if isinstance(exc, EngineFailure):
+                raise
+            raise InternalEngineFailure(
+                "native proxy construction failed",
+                diagnostic_ref="engine.proxy-build",
+            ) from exc
+        results = tuple(completed)
+        self._proxies[cache_key] = native_proxy
+        self._proxy_results[cache_key] = results
+        return results
+
+    def invalidate_proxies(self, graph_digests: tuple[ObjectId, ...]) -> int:
+        backend, _ = self._state()
+        if not isinstance(graph_digests, tuple) or any(
+            not isinstance(item, ObjectId) for item in graph_digests
+        ):
+            raise InvalidGraph("proxy invalidation requires typed graph digests")
+        identities = tuple(item.value for item in graph_digests)
+        if identities != tuple(sorted(set(identities))):
+            raise InvalidGraph("proxy invalidation graph digests must be sorted and unique")
+        wanted = set(graph_digests)
+        selected = tuple(key for key in self._proxies if key[0] in wanted)
+        failure: Exception | None = None
+        for key in selected:
+            native = self._proxies.pop(key)
+            self._proxy_results.pop(key, None)
+            try:
+                backend.release_buffer(native)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+            finally:
+                del native
+        gc.collect()
+        if failure is not None:
+            raise InternalEngineFailure(
+                "native proxy invalidation failed",
+                diagnostic_ref="engine.proxy-invalidation",
+            ) from failure
+        return len(selected)
 
     def export_tiles(
         self,
@@ -1566,6 +1908,15 @@ class Od7ImageEngine:
     def close(self) -> None:
         backend, _ = self._state()
         failure: Exception | None = None
+        while self._proxies:
+            _, proxy = self._proxies.popitem()
+            try:
+                backend.release_buffer(proxy)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+            finally:
+                del proxy
         while self._graphs:
             _, graph = self._graphs.popitem()
             try:
@@ -1585,7 +1936,9 @@ class Od7ImageEngine:
             finally:
                 del native
         gc.collect()
+        self._proxy_results.clear()
         self._plans.clear()
+        self._graph_specs.clear()
         self._profiles.clear()
         self._capabilities = None
         try:

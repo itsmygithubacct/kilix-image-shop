@@ -333,7 +333,7 @@ class FakeEngineTests(unittest.TestCase):
         return TileRequest(
             self.graph_digest,
             Rect(0, 0, 2, 2),
-            Rect(0, 0, 2, 2),
+            Rect(0, 0, 2, 2) if level == 0 else Rect(0, 0, 1, 1),
             level,
             self.graph.output_spec,
             revision,
@@ -362,12 +362,19 @@ class FakeEngineTests(unittest.TestCase):
 
     def test_proxy_and_export_paths_preserve_request_order(self) -> None:
         proxies = (self.request(level=1), self.request(level=2), self.request(level=3))
-        proxy_results = self.engine.build_proxy(proxies, cancel=self.cancel)
+        proxy_results = tuple(
+            self.engine.build_proxy((item,), cancel=self.cancel)[0]
+            for item in proxies
+        )
         export_results = self.engine.export_tiles((self.request(),), cancel=self.cancel)
         self.assertEqual(tuple(item.level for item in proxy_results), (1, 2, 3))
         self.assertEqual(tuple(item.level for item in export_results), (0,))
         with self.assertRaises(InvalidGraph):
             self.engine.build_proxy((self.request(),), cancel=self.cancel)
+        with self.assertRaises(InvalidGraph):
+            self.engine.build_proxy(proxies, cancel=self.cancel)
+        self.assertEqual(self.engine.invalidate_proxies((self.graph_digest,)), 3)
+        self.assertEqual(self.engine.invalidate_proxies((self.graph_digest,)), 0)
 
     def test_cancelled_stale_and_uncompiled_work_returns_no_result(self) -> None:
         cancelled = CancelToken()

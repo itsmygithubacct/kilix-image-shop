@@ -14,3 +14,6 @@
 - Add OD-7 integration slice 3/7: digest-bound private ICC materialization,
   exact H0 buffer import, accepted operation-registry introspection, and closed
   nine-family native graph-plan compilation with cancellation cleanup.
+- Add OD-7 integration slice 4/7: three-level streaming proxy construction,
+  seven-component tile keys, complete-only level manifests, zoom selection,
+  revision-aware invalidation, and bounded native proxy reads.

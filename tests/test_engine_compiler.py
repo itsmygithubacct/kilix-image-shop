@@ -60,6 +60,7 @@ from kilix_image_shop.engine.runtime import (
     ProfileBinding,
     RuntimeProcessGuard,
 )
+from kilix_image_shop.render.proxy import ProxyBuildPlan, ProxyCache
 
 
 GROUP_BYTES = b'{"group":"plebian.f115.image-engine","synthetic":true}\n'
@@ -93,8 +94,11 @@ class CompilerBackend:
         self.released_buffers: list[object] = []
         self.released_graphs: list[object] = []
         self.lifecycle: list[str] = []
+        self.proxy_builds: list[tuple[int, Rect, str, object, object]] = []
+        self.proxy_reads: list[tuple[object, Rect, str]] = []
         self.cancel_on_import: CancelToken | None = None
         self.cancel_on_compile: CancelToken | None = None
+        self.cancel_on_proxy_build: CancelToken | None = None
         self.shutdown_count = 0
 
     def initialize(self) -> None:
@@ -138,6 +142,31 @@ class CompilerBackend:
         if self.cancel_on_compile is not None:
             self.cancel_on_compile.cancel()
         return native
+
+    def build_proxy(
+        self,
+        graph: object,
+        *,
+        level: int,
+        expected_extent: Rect,
+        encoding: str,
+        scale_definition: object,
+        sink_definition: object,
+    ) -> object:
+        native = object()
+        self.proxy_builds.append(
+            (level, expected_extent, encoding, scale_definition, sink_definition)
+        )
+        if self.cancel_on_proxy_build is not None:
+            self.cancel_on_proxy_build.cancel()
+        return native
+
+    def read_buffer(self, buffer: object, rectangle: Rect, encoding: str) -> bytes:
+        self.proxy_reads.append((buffer, rectangle, encoding))
+        bytes_per_pixel = 1 if encoding == "Y u8" else 8
+        return bytes((rectangle.x % 256,)) * (
+            rectangle.width * rectangle.height * bytes_per_pixel
+        )
 
     def release_buffer(self, buffer: object) -> None:
         self.lifecycle.append("buffer-release")
@@ -413,11 +442,58 @@ class ClosedCompilerTests(CompilerFixture):
         with self.assertRaises(InvalidGraph):
             self.engine.compiled_plan(graph.digest)
 
-    def test_slice_three_does_not_claim_unimplemented_native_render_paths(self) -> None:
-        self.register_profiles()
+    def test_slice_four_builds_and_caches_one_complete_native_proxy_level(self) -> None:
+        graph, digest, _ = self.compile_full_graph()
+        plan = ProxyBuildPlan(
+            digest,
+            Rect(0, 0, 2, 2),
+            1,
+            graph.output_spec,
+            graph.revision,
+            graph.compatibility_digest,
+        )
+        requests = plan.requests()
+        first = self.engine.build_proxy(requests, cancel=self.cancel)
+        second = self.engine.build_proxy(requests, cancel=self.cancel)
+        manifest = ProxyCache().publish(
+            plan,
+            first,
+            current_revision=graph.revision,
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0].destination, Rect(0, 0, 1, 1))
+        self.assertEqual(len(manifest.tiles), 1)
+        self.assertEqual(len(self.backend.proxy_builds), 1)
+        self.assertEqual(len(self.backend.proxy_reads), 1)
+        released_before = len(self.backend.released_buffers)
+        self.assertEqual(self.engine.invalidate_proxies((digest,)), 1)
+        self.assertEqual(len(self.backend.released_buffers), released_before + 1)
+        self.assertEqual(self.engine.invalidate_proxies((digest,)), 0)
         with self.assertRaises(UnsupportedOperation):
-            self.engine.build_proxy((), cancel=self.cancel)
+            self.engine.render_tile(requests[0], cancel=self.cancel)
         self.assertIsInstance(self.engine, ImageEngine)
+
+    def test_cancelled_native_proxy_build_releases_buffer_and_publishes_zero_results(
+        self,
+    ) -> None:
+        graph, digest, _ = self.compile_full_graph()
+        token = CancelToken()
+        self.backend.cancel_on_proxy_build = token
+        requests = ProxyBuildPlan(
+            digest,
+            Rect(0, 0, 2, 2),
+            1,
+            graph.output_spec,
+            graph.revision,
+            graph.compatibility_digest,
+        ).requests()
+        released_before = len(self.backend.released_buffers)
+        with self.assertRaises(CancelledOrStaleWork):
+            self.engine.build_proxy(requests, cancel=token)
+        self.assertEqual(len(self.backend.released_buffers), released_before + 1)
+        self.assertEqual(len(self.engine._proxies), 0)
+        self.assertEqual(len(self.engine._proxy_results), 0)
 
     def test_close_releases_all_native_objects_before_runtime_shutdown(self) -> None:
         self.compile_full_graph()

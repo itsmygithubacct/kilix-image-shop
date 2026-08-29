@@ -747,6 +747,8 @@ class ImageEngine(Protocol):
         cancel: CancelToken,
     ) -> tuple[TileResult, ...]: ...
 
+    def invalidate_proxies(self, graph_digests: tuple[ObjectId, ...]) -> int: ...
+
     def export_tiles(
         self,
         requests: tuple[TileRequest, ...],
@@ -777,6 +779,9 @@ class FakeImageEngine:
         self._buffers: dict[str, BufferRef] = {}
         self._graphs: dict[ObjectId, GraphSpec] = {}
         self._profiles: set[ObjectId] = set()
+        self._proxy_results: dict[
+            tuple[ObjectId, int], tuple[TileResult, ...]
+        ] = {}
 
     def _bind_or_check_owner(self) -> None:
         current = threading.get_ident()
@@ -961,13 +966,54 @@ class FakeImageEngine:
         cancel: CancelToken,
     ) -> tuple[TileResult, ...]:
         self._require_started()
-        if not isinstance(requests, tuple) or any(
+        if not isinstance(requests, tuple) or not requests or any(
             not isinstance(item, TileRequest) for item in requests
         ):
-            raise InvalidGraph("proxy requests must be an immutable typed tuple")
+            raise InvalidGraph("proxy requests must be a non-empty immutable typed tuple")
         if any(item.level not in self._capabilities.proxy_levels for item in requests):
             raise InvalidGraph("proxy work must target levels 1 through 3")
-        return tuple(self._render_tile(item, cancel) for item in requests)
+        identity = (
+            requests[0].graph_digest,
+            requests[0].level,
+            requests[0].spec,
+            requests[0].revision,
+        )
+        if any(
+            (
+                item.graph_digest,
+                item.level,
+                item.spec,
+                item.revision,
+            )
+            != identity
+            for item in requests
+        ):
+            raise InvalidGraph("one proxy build must cover exactly one graph level")
+        key = (requests[0].graph_digest, requests[0].level)
+        existing = self._proxy_results.get(key)
+        if existing is not None:
+            return existing
+        results = tuple(self._render_tile(item, cancel) for item in requests)
+        cancel.raise_if_cancelled()
+        self._proxy_results[key] = results
+        return results
+
+    def invalidate_proxies(self, graph_digests: tuple[ObjectId, ...]) -> int:
+        self._require_started()
+        if not isinstance(graph_digests, tuple) or any(
+            not isinstance(item, ObjectId) for item in graph_digests
+        ):
+            raise InvalidGraph("proxy invalidation requires typed graph digests")
+        identities = tuple(item.value for item in graph_digests)
+        if identities != tuple(sorted(set(identities))):
+            raise InvalidGraph("proxy invalidation graph digests must be sorted and unique")
+        wanted = set(graph_digests)
+        removed = tuple(
+            key for key in self._proxy_results if key[0] in wanted
+        )
+        for key in removed:
+            del self._proxy_results[key]
+        return len(removed)
 
     def export_tiles(
         self,
@@ -989,6 +1035,7 @@ class FakeImageEngine:
         self._buffers.clear()
         self._graphs.clear()
         self._profiles.clear()
+        self._proxy_results.clear()
         self._started = False
         self._closed = True
 
