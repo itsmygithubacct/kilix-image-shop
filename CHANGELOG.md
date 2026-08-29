@@ -11,3 +11,6 @@
 - Add OD-7 integration slice 2/7: exact runtime compatibility checks, guarded
   one-shot GI initialization, six-property H0 readback, private owned swap
   sessions, operation-population verification, and an in-memory smoke graph.
+- Add OD-7 integration slice 3/7: digest-bound private ICC materialization,
+  exact H0 buffer import, accepted operation-registry introspection, and closed
+  nine-family native graph-plan compilation with cancellation cleanup.

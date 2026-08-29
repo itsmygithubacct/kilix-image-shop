@@ -1,7 +1,7 @@
 # Kilix Image Shop
 
 Kilix Image Shop is the local-first image editor planned for Plebian OS 0.2.1.
-The repository contains its immutable document-domain slice and the first two
+The repository contains its immutable document-domain slice and the first three
 engine-integration slices. The domain provides typed content identities, checked
 geometry and decode budgets, closed layer/mask/provenance values, the
 `kilix.imageshop.project/v1` schema, canonical serialization, and
@@ -10,9 +10,12 @@ engine-neutral graph, buffer, tile, cancellation, and H0 format contracts plus
 a deterministic conformance fake. Its guarded runtime validates accepted
 package/plugin carriers, deterministic environment and private swap state,
 applies and reads back the complete H0 configuration, verifies native identity,
-and publishes only after a 1x1 smoke graph. Native graph compilation and tiled
-rendering, persistence, history, presentation, and provider adapters enter as
-separate reviewed slices.
+and publishes only after a 1x1 smoke graph. The third slice imports exact H0
+pixel buffers, materializes digest-bound ICC carriers into private session
+storage, and compiles the closed nine-family graph through a frozen operation
+registry without accepting native operation or property strings from project
+data. Tiled rendering, persistence, history, presentation, and provider adapters
+enter as separate reviewed slices.
 
 ## Product boundary
 

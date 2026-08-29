@@ -22,12 +22,18 @@ class TierFormatPolicy:
 
     tier: RenderTier
     working_format: PixelFormat
+    alpha_association: AlphaAssociation = AlphaAssociation.STRAIGHT
 
     def __post_init__(self) -> None:
         if not isinstance(self.tier, RenderTier):
             raise InvalidGraph("render tier must be closed")
         if self.working_format not in (PixelFormat.RGBA_U16, PixelFormat.RGBA_FLOAT):
             raise InvalidGraph("working format must be an RGBA format")
+        if self.alpha_association not in {
+            AlphaAssociation.STRAIGHT,
+            AlphaAssociation.PREMULTIPLIED,
+        }:
+            raise InvalidGraph("working pixels require explicit straight or premultiplied alpha")
         if self.tier is RenderTier.H0 and self.working_format is not PixelFormat.RGBA_U16:
             raise UnsupportedOperation("H0 requires RGBA u16 working pixels")
 
@@ -60,6 +66,20 @@ class TierFormatPolicy:
             return
         if spec.pixel_format is not self.working_format:
             raise UnsupportedOperation("pixel spec differs from the selected tier format")
+        if spec.alpha_association is not self.alpha_association:
+            raise UnsupportedOperation("pixel alpha differs from the selected tier policy")
+
+    def native_encoding(self, spec: PixelSpec) -> str:
+        self.validate(spec)
+        if spec.pixel_format is PixelFormat.Y_U8:
+            return "Y u8"
+        suffix = "u16" if spec.pixel_format is PixelFormat.RGBA_U16 else "float"
+        model = (
+            "RGBA"
+            if spec.alpha_association is AlphaAssociation.STRAIGHT
+            else "RaGaBaA"
+        )
+        return f"{model} {suffix}"
 
     def expected_byte_count(self, width: int, height: int, spec: PixelSpec) -> int:
         self.validate(spec)

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import fcntl
 import gc
+import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -19,27 +21,53 @@ import sys
 import threading
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, TypeAlias
 
 from kilix_image_shop.domain.color import EngineCompatibility
-from kilix_image_shop.domain.identifiers import ObjectId
+from kilix_image_shop.domain.geometry import Rect
+from kilix_image_shop.domain.identifiers import ObjectId, RevisionId
 
 from .api import (
+    AdjustmentParameters,
+    AffineTransformCropParameters,
+    BufferRef,
+    CancelToken,
+    ColourConversionParameters,
+    DecodeRefusal,
+    DestinationCropScaleParameters,
     EngineCapabilities,
+    EngineFailure,
+    GraphNodeSpec,
     GraphNodeKind,
+    GraphSpec,
     IncompatibleRuntime,
     InternalEngineFailure,
     InvalidGraph,
+    MaskParameters,
+    OpacityBlendParameters,
+    OrderedGroupParameters,
     PixelFormat,
+    PixelSourceParameters,
+    PixelSpec,
     ResourceExhaustion,
+    TextSourceParameters,
+    TileRequest,
+    TileResult,
     UnavailableGroup,
+    UnsupportedOperation,
 )
 from .compatibility import (
     GI_ORIGIN,
     NativeObservation,
+    OperationDefinition,
+    OperationProperty,
+    OperationRegistry,
+    PropertySource,
+    RegistryValueKind,
     RuntimeConfiguration,
     validate_native_observation,
 )
+from .formats import RenderTier, TierFormatPolicy
 
 
 class StartupStep(StrEnum):
@@ -66,6 +94,28 @@ class NativeRuntimeBackend(Protocol):
     def read_configuration(self, names: tuple[str, ...]) -> dict[str, object]: ...
 
     def observe(self) -> NativeObservation: ...
+
+    def verify_operation_registry(self, registry: OperationRegistry) -> None: ...
+
+    def validate_profile(self, path: pathlib.Path, encoding: str) -> None: ...
+
+    def import_pixels(
+        self,
+        payload: bytes,
+        extent: Rect,
+        encoding: str,
+    ) -> object: ...
+
+    def compile_plan(
+        self,
+        plan: CompiledGraphPlan,
+        buffers: dict[str, object],
+        profiles: dict[ObjectId, pathlib.Path],
+    ) -> object: ...
+
+    def release_buffer(self, buffer: object) -> None: ...
+
+    def release_graph(self, graph: object) -> None: ...
 
     def smoke_test(self) -> None: ...
 
@@ -144,6 +194,389 @@ class RuntimeHandle:
     @property
     def compatibility_digest(self) -> ObjectId:
         return self.compatibility.digest
+
+
+@dataclass(frozen=True, slots=True)
+class BufferBinding:
+    token: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileBinding:
+    digest: ObjectId
+
+
+BoundPropertyValue: TypeAlias = (
+    bool
+    | int
+    | float
+    | str
+    | tuple[float, ...]
+    | BufferBinding
+    | ProfileBinding
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BoundProperty:
+    native_name: str
+    value: BoundPropertyValue
+
+
+@dataclass(frozen=True, slots=True)
+class PlanInput:
+    source_plan_id: str
+    source_pad: str
+    destination_pad: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledPlanNode:
+    plan_id: str
+    semantic_key: str
+    native_operation: str
+    properties: tuple[BoundProperty, ...]
+    inputs: tuple[PlanInput, ...]
+    output_pad: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledGraphPlan:
+    graph_digest: ObjectId
+    revision: RevisionId
+    nodes: tuple[CompiledPlanNode, ...]
+    output_plan_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.graph_digest, ObjectId):
+            raise InvalidGraph("compiled graph plan lacks a graph digest")
+        if not isinstance(self.revision, RevisionId):
+            raise InvalidGraph("compiled graph plan lacks a document revision")
+        if not isinstance(self.nodes, tuple) or not self.nodes:
+            raise InvalidGraph("compiled graph plan must contain native nodes")
+        identifiers = tuple(item.plan_id for item in self.nodes)
+        if len(identifiers) != len(set(identifiers)):
+            raise InvalidGraph("compiled graph plan repeats a native node ID")
+        if self.output_plan_id not in identifiers:
+            raise InvalidGraph("compiled graph plan output node is missing")
+
+
+def _binding_value(
+    specification: OperationProperty,
+    value: object,
+) -> BoundPropertyValue:
+    kind = specification.value_kind
+    if kind is RegistryValueKind.BOOLEAN:
+        if not isinstance(value, bool):
+            raise InvalidGraph("registry boolean property received the wrong type")
+        return value
+    if kind is RegistryValueKind.INTEGER:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise InvalidGraph("registry integer property received the wrong type")
+        return value
+    if kind is RegistryValueKind.NUMBER:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise InvalidGraph("registry number property received the wrong type")
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise InvalidGraph("registry number property must be finite")
+        return 0.0 if parsed == 0.0 else parsed
+    if kind is RegistryValueKind.NUMBER_VECTOR:
+        if not isinstance(value, tuple) or not value:
+            raise InvalidGraph("registry vector property requires a non-empty tuple")
+        parsed_values: list[float] = []
+        for item in value:
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                raise InvalidGraph("registry vector property contains a non-number")
+            parsed = float(item)
+            if not math.isfinite(parsed):
+                raise InvalidGraph("registry vector property must be finite")
+            parsed_values.append(0.0 if parsed == 0.0 else parsed)
+        return tuple(parsed_values)
+    if kind is RegistryValueKind.STRING:
+        if not isinstance(value, str) or not value or len(value) > 4096:
+            raise InvalidGraph("registry string property received the wrong type")
+        return value
+    if kind is RegistryValueKind.BUFFER:
+        if not isinstance(value, BufferRef):
+            raise InvalidGraph("registry buffer property requires an opaque buffer ref")
+        return BufferBinding(value.token)
+    if kind is RegistryValueKind.PROFILE_PATH:
+        if not isinstance(value, ObjectId):
+            raise InvalidGraph("registry profile property requires a profile digest")
+        return ProfileBinding(value)
+    raise InvalidGraph("registry value kind is unsupported")
+
+
+def _bind_properties(
+    definition: OperationDefinition,
+    semantic_values: dict[str, object],
+) -> tuple[BoundProperty, ...]:
+    expected_semantics = {
+        item.semantic_name
+        for item in definition.properties
+        if item.source is PropertySource.SEMANTIC
+    }
+    if set(semantic_values) != expected_semantics:
+        raise InvalidGraph("semantic properties differ from the accepted operation map")
+    bound: list[BoundProperty] = []
+    for item in definition.properties:
+        if item.source is PropertySource.DEFAULT:
+            continue
+        value = (
+            item.fixed_value
+            if item.source is PropertySource.FIXED
+            else semantic_values[item.semantic_name]
+        )
+        bound.append(BoundProperty(item.native_name, _binding_value(item, value)))
+    return tuple(bound)
+
+
+def _affine_string(parameters: AffineTransformCropParameters) -> str:
+    transform = parameters.transform
+    values = (transform.a, transform.b, transform.c, transform.d, transform.e, transform.f)
+    return "matrix(" + ",".join(format(value, ".17g") for value in values) + ")"
+
+
+class _GraphPlanCompiler:
+    def __init__(self, registry: OperationRegistry) -> None:
+        self._registry = registry
+        self._nodes: list[CompiledPlanNode] = []
+        self._by_id: dict[str, CompiledPlanNode] = {}
+
+    def _add(
+        self,
+        plan_id: str,
+        semantic_key: str,
+        semantic_values: dict[str, object],
+        inputs: tuple[tuple[str, str], ...],
+    ) -> str:
+        if plan_id in self._by_id:
+            raise InvalidGraph("native compiler generated a duplicate plan node")
+        definition = self._registry.definition(semantic_key)
+        if tuple(destination for _, destination in inputs) != definition.input_pads:
+            raise InvalidGraph("compiler input pads differ from the accepted operation map")
+        planned_inputs: list[PlanInput] = []
+        for source_id, destination_pad in inputs:
+            source = self._by_id.get(source_id)
+            if source is None or source.output_pad is None:
+                raise InvalidGraph("compiler input refers to an unavailable native output")
+            planned_inputs.append(
+                PlanInput(source_id, source.output_pad, destination_pad)
+            )
+        node = CompiledPlanNode(
+            plan_id=plan_id,
+            semantic_key=semantic_key,
+            native_operation=definition.operation,
+            properties=_bind_properties(definition, semantic_values),
+            inputs=tuple(planned_inputs),
+            output_pad=definition.output_pad,
+        )
+        self._nodes.append(node)
+        self._by_id[plan_id] = node
+        return plan_id
+
+    def _halo(self, node: GraphNodeSpec, *semantic_keys: str) -> None:
+        required = max(
+            (self._registry.definition(key).halo_pixels for key in semantic_keys),
+            default=0,
+        )
+        if node.halo_pixels != required:
+            raise InvalidGraph("graph node halo differs from the accepted operation map")
+
+    def compile(
+        self,
+        graph: GraphSpec,
+        buffers: tuple[BufferRef, ...],
+        profiles: tuple[ObjectId, ...],
+    ) -> CompiledGraphPlan:
+        if not isinstance(graph, GraphSpec):
+            raise InvalidGraph("native compiler requires a closed graph spec")
+        if not isinstance(buffers, tuple) or any(
+            not isinstance(item, BufferRef) for item in buffers
+        ):
+            raise InvalidGraph("native compiler requires immutable buffer refs")
+        if not isinstance(profiles, tuple) or any(
+            not isinstance(item, ObjectId) for item in profiles
+        ):
+            raise InvalidGraph("native compiler requires immutable profile identities")
+        if len(set(profiles)) != len(profiles):
+            raise InvalidGraph("native compiler profile identities must be unique")
+
+        graph_outputs: dict[str, str] = {}
+        for node in graph.nodes:
+            parameters = node.parameters
+            if node.kind in {GraphNodeKind.PIXEL_SOURCE, GraphNodeKind.TEXT_SOURCE}:
+                key = (
+                    "source.pixel"
+                    if node.kind is GraphNodeKind.PIXEL_SOURCE
+                    else "source.text-raster"
+                )
+                self._halo(node, key)
+                buffer = self._resolve_source(node, graph.revision, buffers)
+                graph_outputs[node.node_id] = self._add(
+                    f"{node.node_id}__source",
+                    key,
+                    {"buffer": buffer},
+                    (),
+                )
+                continue
+
+            inputs = tuple(graph_outputs[item] for item in node.inputs)
+            if isinstance(parameters, AffineTransformCropParameters):
+                self._halo(node, "transform.affine", "transform.crop")
+                transformed = self._add(
+                    f"{node.node_id}__affine",
+                    "transform.affine",
+                    {"transform": _affine_string(parameters)},
+                    ((inputs[0], "input"),),
+                )
+                crop = parameters.crop
+                graph_outputs[node.node_id] = self._add(
+                    f"{node.node_id}__crop",
+                    "transform.crop",
+                    {
+                        "x": crop.x,
+                        "y": crop.y,
+                        "width": crop.width,
+                        "height": crop.height,
+                    },
+                    ((transformed, "input"),),
+                )
+            elif isinstance(parameters, OpacityBlendParameters):
+                mode_key = f"blend.mode.{parameters.blend_mode.value}"
+                self._halo(node, "blend.opacity", mode_key)
+                opacity = self._add(
+                    f"{node.node_id}__opacity",
+                    "blend.opacity",
+                    {"value": parameters.opacity_u16 / 65535.0},
+                    ((inputs[1], "input"),),
+                )
+                graph_outputs[node.node_id] = self._add(
+                    f"{node.node_id}__blend",
+                    mode_key,
+                    {},
+                    ((inputs[0], "input"), (opacity, "aux")),
+                )
+            elif isinstance(parameters, MaskParameters):
+                keys = ["mask.apply"]
+                mask_input = inputs[1]
+                if parameters.inverted:
+                    keys.append("mask.invert")
+                    mask_input = self._add(
+                        f"{node.node_id}__invert",
+                        "mask.invert",
+                        {},
+                        ((mask_input, "input"),),
+                    )
+                self._halo(node, *keys)
+                graph_outputs[node.node_id] = self._add(
+                    f"{node.node_id}__mask",
+                    "mask.apply",
+                    {"value": 1.0},
+                    ((inputs[0], "input"), (mask_input, "aux")),
+                )
+            elif isinstance(parameters, AdjustmentParameters):
+                key = f"adjustment.{parameters.adjustment.adjustment_id.value}"
+                self._halo(node, key)
+                values = {
+                    item.name: item.value for item in parameters.adjustment.parameters
+                }
+                graph_outputs[node.node_id] = self._add(
+                    f"{node.node_id}__adjustment",
+                    key,
+                    values,
+                    ((inputs[0], "input"),),
+                )
+            elif isinstance(parameters, OrderedGroupParameters):
+                self._halo(node, "group.compose")
+                output = inputs[0]
+                for index, source in enumerate(inputs[1:], start=1):
+                    output = self._add(
+                        f"{node.node_id}__compose_{index}",
+                        "group.compose",
+                        {},
+                        ((output, "input"), (source, "aux")),
+                    )
+                graph_outputs[node.node_id] = output
+            elif isinstance(parameters, ColourConversionParameters):
+                self._halo(node, "colour.cast", "colour.convert")
+                if (
+                    parameters.source_profile not in profiles
+                    or parameters.destination_profile not in profiles
+                ):
+                    raise DecodeRefusal("colour conversion profile is not registered")
+                cast = self._add(
+                    f"{node.node_id}__cast",
+                    "colour.cast",
+                    {"profile": parameters.source_profile},
+                    ((inputs[0], "input"),),
+                )
+                graph_outputs[node.node_id] = self._add(
+                    f"{node.node_id}__convert",
+                    "colour.convert",
+                    {"profile": parameters.destination_profile},
+                    ((cast, "input"),),
+                )
+            elif isinstance(parameters, DestinationCropScaleParameters):
+                self._halo(node, "destination.scale", "destination.crop")
+                scaled = self._add(
+                    f"{node.node_id}__scale",
+                    "destination.scale",
+                    {
+                        "x": parameters.destination.width / parameters.source.width,
+                        "y": parameters.destination.height / parameters.source.height,
+                    },
+                    ((inputs[0], "input"),),
+                )
+                destination = parameters.destination
+                graph_outputs[node.node_id] = self._add(
+                    f"{node.node_id}__crop",
+                    "destination.crop",
+                    {
+                        "x": destination.x,
+                        "y": destination.y,
+                        "width": destination.width,
+                        "height": destination.height,
+                    },
+                    ((scaled, "input"),),
+                )
+            else:
+                raise InvalidGraph("closed graph compiler received an unknown family")
+
+        return CompiledGraphPlan(
+            graph.digest,
+            graph.revision,
+            tuple(self._nodes),
+            graph_outputs[graph.output_node],
+        )
+
+    @staticmethod
+    def _resolve_source(
+        node: GraphNodeSpec,
+        revision: RevisionId,
+        buffers: tuple[BufferRef, ...],
+    ) -> BufferRef:
+        parameters = node.parameters
+        if isinstance(parameters, PixelSourceParameters):
+            digest = parameters.object_digest
+            extent = parameters.extent
+        elif isinstance(parameters, TextSourceParameters):
+            digest = parameters.render_identity
+            extent = parameters.extent
+        else:
+            raise InvalidGraph("source node has the wrong parameter family")
+        matches = tuple(
+            item
+            for item in buffers
+            if item.content_digest == digest
+            and item.extent == extent
+            and item.spec == node.output_spec
+            and item.revision == revision
+        )
+        if len(matches) != 1:
+            raise DecodeRefusal("source node does not resolve to one imported buffer")
+        return matches[0]
 
 
 @dataclass(slots=True)
@@ -330,6 +763,77 @@ def _close_owned_session(session: _OwnedSession) -> None:
         os.close(session.lock_fd)
 
 
+def _materialize_profile(
+    session: _OwnedSession,
+    payload: bytes,
+    digest: ObjectId,
+) -> pathlib.Path:
+    profiles = session.path / "profiles"
+    try:
+        try:
+            profiles.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        metadata = profiles.lstat()
+    except OSError as exc:
+        raise ResourceExhaustion("private profile directory cannot be established") from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or _mode(profiles) != 0o700
+    ):
+        raise ResourceExhaustion("private profile directory ownership or mode is unsafe")
+    path = profiles / f"{digest.value}.icc"
+    descriptor = -1
+    created = False
+    try:
+        try:
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+            created = True
+            written = 0
+            while written < len(payload):
+                written += os.write(descriptor, payload[written:])
+            os.fsync(descriptor)
+        except FileExistsError:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            file_metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(file_metadata.st_mode)
+                or file_metadata.st_uid != os.getuid()
+                or stat.S_IMODE(file_metadata.st_mode) != 0o600
+                or file_metadata.st_size != len(payload)
+            ):
+                raise ResourceExhaustion("private profile carrier metadata changed")
+            chunks: list[bytes] = []
+            remaining = file_metadata.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 65_536))
+                if not chunk:
+                    raise ResourceExhaustion("private profile carrier ended early")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise ResourceExhaustion("private profile carrier grew while reading")
+            if ObjectId.from_bytes(b"".join(chunks)) != digest:
+                raise ResourceExhaustion("private profile carrier identity changed")
+    except OSError as exc:
+        if created:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise ResourceExhaustion("private profile carrier cannot be materialized") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return path
+
+
 def _verify_carrier(
     path: pathlib.Path,
     expected: ObjectId,
@@ -460,6 +964,160 @@ class _PyGiBackend:
             operations=operations,
         )
 
+    @staticmethod
+    def _default_scalar(value: object) -> object:
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        try:
+            return int(value)  # GObject enum values
+        except (TypeError, ValueError):
+            raise IncompatibleRuntime(
+                "native operation property has an unsupported default type"
+            ) from None
+
+    def verify_operation_registry(self, registry: OperationRegistry) -> None:
+        graph = self._gegl.Node()
+        native_nodes: list[object] = []
+        try:
+            for definition in registry.definitions:
+                if not self._gegl.has_operation(definition.operation):
+                    raise IncompatibleRuntime("operation registry names a missing operation")
+                observed_properties = {
+                    item.name: item
+                    for item in self._gegl.Operation.list_properties(
+                        definition.operation
+                    )
+                }
+                if set(observed_properties) != {
+                    item.native_name for item in definition.properties
+                }:
+                    raise IncompatibleRuntime(
+                        "native operation property population differs from registry"
+                    )
+                for expected_property in definition.properties:
+                    observed = observed_properties[expected_property.native_name]
+                    if observed.value_type.name != expected_property.native_type:
+                        raise IncompatibleRuntime(
+                            "native operation property type differs from registry"
+                        )
+                    if self._default_scalar(
+                        observed.get_default_value()
+                    ) != expected_property.default_value:
+                        raise IncompatibleRuntime(
+                            "native operation property default differs from registry"
+                        )
+                node = graph.create_child(definition.operation)
+                native_nodes.append(node)
+                if tuple(node.list_input_pads()) != definition.input_pads:
+                    raise IncompatibleRuntime(
+                        "native operation input pads differ from registry"
+                    )
+                output_pads = tuple(node.list_output_pads())
+                expected_outputs = (
+                    ()
+                    if definition.output_pad is None
+                    else (definition.output_pad,)
+                )
+                if output_pads != expected_outputs:
+                    raise IncompatibleRuntime(
+                        "native operation output pads differ from registry"
+                    )
+        finally:
+            native_nodes.clear()
+            del graph
+            gc.collect()
+
+    def validate_profile(self, path: pathlib.Path, encoding: str) -> None:
+        source_buffer = self._gegl.Buffer.new(encoding, 0, 0, 1, 1)
+        destination_buffer = self._gegl.Buffer.new(encoding, 0, 0, 1, 1)
+        graph = self._gegl.Node()
+        source = graph.create_child("gegl:buffer-source")
+        source.set_property("buffer", source_buffer)
+        cast = graph.create_child("gegl:cast-space")
+        cast.set_property("path", str(path))
+        convert = graph.create_child("gegl:convert-space")
+        convert.set_property("path", str(path))
+        sink = graph.create_child("gegl:write-buffer")
+        sink.set_property("buffer", destination_buffer)
+        source.connect_to("output", cast, "input")
+        cast.connect_to("output", convert, "input")
+        convert.connect_to("output", sink, "input")
+        sink.process()
+        del sink, convert, cast, source, graph, destination_buffer, source_buffer
+        gc.collect()
+
+    def import_pixels(
+        self,
+        payload: bytes,
+        extent: Rect,
+        encoding: str,
+    ) -> object:
+        rectangle = self._gegl.Rectangle.new(
+            extent.x,
+            extent.y,
+            extent.width,
+            extent.height,
+        )
+        buffer = self._gegl.Buffer.new(
+            encoding,
+            extent.x,
+            extent.y,
+            extent.width,
+            extent.height,
+        )
+        buffer.set(rectangle, encoding, payload)
+        return buffer
+
+    def compile_plan(
+        self,
+        plan: CompiledGraphPlan,
+        buffers: dict[str, object],
+        profiles: dict[ObjectId, pathlib.Path],
+    ) -> object:
+        graph = self._gegl.Node()
+        nodes: dict[str, object] = {}
+        try:
+            for planned in plan.nodes:
+                node = graph.create_child(planned.native_operation)
+                for property_value in planned.properties:
+                    value: object = property_value.value
+                    if isinstance(value, BufferBinding):
+                        if value.token not in buffers:
+                            raise InvalidGraph("compiled plan names an unknown buffer")
+                        value = buffers[value.token]
+                    elif isinstance(value, ProfileBinding):
+                        if value.digest not in profiles:
+                            raise InvalidGraph("compiled plan names an unknown profile")
+                        value = str(profiles[value.digest])
+                    node.set_property(property_value.native_name, value)
+                for connection in planned.inputs:
+                    source = nodes.get(connection.source_plan_id)
+                    if source is None:
+                        raise InvalidGraph("compiled plan has a forward native edge")
+                    source.connect_to(
+                        connection.source_pad,
+                        node,
+                        connection.destination_pad,
+                    )
+                nodes[planned.plan_id] = node
+        except Exception:
+            nodes.clear()
+            del graph
+            gc.collect()
+            raise
+        return _NativeCompiledGraph(graph, nodes, plan.output_plan_id)
+
+    def release_buffer(self, buffer: object) -> None:
+        del buffer
+        gc.collect()
+
+    def release_graph(self, graph: object) -> None:
+        if not isinstance(graph, _NativeCompiledGraph):
+            raise InternalEngineFailure("runtime received an unknown compiled graph")
+        graph.nodes.clear()
+        graph.root = None
+        gc.collect()
+
     def smoke_test(self) -> None:
         source_buffer = self._gegl.Buffer.new("RGBA u16", 0, 0, 1, 1)
         destination_buffer = self._gegl.Buffer.new("RGBA u16", 0, 0, 1, 1)
@@ -477,6 +1135,13 @@ class _PyGiBackend:
         if self._initialized:
             self._gegl.exit()
             self._initialized = False
+
+
+@dataclass(slots=True)
+class _NativeCompiledGraph:
+    root: object | None
+    nodes: dict[str, object]
+    output_plan_id: str
 
 
 def _load_pygi() -> NativeRuntimeBackend:
@@ -611,6 +1276,7 @@ class ImageRuntime:
             completed.append(StartupStep.READ_BACK_CONFIGURATION)
 
             validate_native_observation(configuration, native.observe())
+            native.verify_operation_registry(configuration.operation_registry)
             completed.append(StartupStep.VERIFY_COMPATIBILITY)
 
             native.smoke_test()
@@ -694,10 +1360,255 @@ class ImageRuntime:
                 diagnostic_ref="runtime.shutdown",
             ) from failure
 
+    def _engine_state(self) -> tuple[NativeRuntimeBackend, _OwnedSession]:
+        self._check_owner()
+        if self._native is None or self._session is None or self._handle is None:
+            raise IncompatibleRuntime("runtime is not published")
+        return self._native, self._session
+
+
+class Od7ImageEngine:
+    """H0 GEGL/babl engine whose native handles remain inside this module."""
+
+    def __init__(self, runtime: ImageRuntime) -> None:
+        if not isinstance(runtime, ImageRuntime):
+            raise InvalidGraph("OD-7 engine requires a guarded image runtime")
+        expected = runtime._configuration.expected
+        self._runtime = runtime
+        self._policy = TierFormatPolicy(
+            RenderTier.H0,
+            PixelFormat(expected.working_format),
+            expected.alpha_association,
+        )
+        self._capabilities: EngineCapabilities | None = None
+        self._profiles: dict[ObjectId, pathlib.Path] = {}
+        self._buffers: dict[str, tuple[BufferRef, object]] = {}
+        self._graphs: dict[ObjectId, object] = {}
+        self._plans: dict[ObjectId, CompiledGraphPlan] = {}
+
+    def _state(self) -> tuple[NativeRuntimeBackend, _OwnedSession]:
+        if self._capabilities is None:
+            raise IncompatibleRuntime("OD-7 engine is not started")
+        return self._runtime._engine_state()
+
+    def start(self) -> EngineCapabilities:
+        if self._capabilities is not None:
+            raise IncompatibleRuntime("OD-7 engine is already started")
+        handle = self._runtime.start()
+        self._capabilities = handle.capabilities
+        return handle.capabilities
+
+    def register_profile(
+        self,
+        payload: bytes,
+        digest: ObjectId,
+        *,
+        cancel: CancelToken,
+    ) -> ObjectId:
+        backend, session = self._state()
+        cancel.raise_if_cancelled()
+        if not isinstance(payload, bytes) or not 0 < len(payload) <= 4_194_304:
+            raise DecodeRefusal("ICC profile must be bounded immutable bytes")
+        if not isinstance(digest, ObjectId) or ObjectId.from_bytes(payload) != digest:
+            raise DecodeRefusal("ICC profile bytes do not match their content identity")
+        if digest in self._profiles:
+            return digest
+        path = _materialize_profile(session, payload, digest)
+        try:
+            probe_spec = self._policy.colour_spec(digest)
+            backend.validate_profile(path, self._policy.native_encoding(probe_spec))
+            cancel.raise_if_cancelled()
+        except Exception as exc:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            if isinstance(exc, EngineFailure):
+                raise
+            raise DecodeRefusal(
+                "ICC profile was refused by the image engine",
+                diagnostic_ref="engine.profile-validation",
+            ) from exc
+        self._profiles[digest] = path
+        return digest
+
+    def import_pixels(
+        self,
+        payload: bytes,
+        *,
+        extent: Rect,
+        spec: PixelSpec,
+        revision: RevisionId,
+        cancel: CancelToken,
+    ) -> BufferRef:
+        backend, _ = self._state()
+        cancel.raise_if_cancelled()
+        if not isinstance(extent, Rect) or not isinstance(revision, RevisionId):
+            raise DecodeRefusal("decoded pixels require typed extent and revision")
+        self._policy.validate(spec)
+        if spec.profile_digest is not None and spec.profile_digest not in self._profiles:
+            raise DecodeRefusal("decoded pixel profile is not registered")
+        self._policy.validate_payload(payload, extent.width, extent.height, spec)
+        digest = ObjectId.from_bytes(payload)
+        descriptor = json.dumps(
+            {
+                "content": digest.value,
+                "extent": extent.to_data(),
+                "spec": spec.to_data(),
+                "revision": revision.value,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        token = f"od7:{hashlib.sha256(descriptor).hexdigest()}"
+        existing = self._buffers.get(token)
+        if existing is not None:
+            return existing[0]
+        try:
+            native = backend.import_pixels(
+                payload,
+                extent,
+                self._policy.native_encoding(spec),
+            )
+            cancel.raise_if_cancelled()
+        except Exception as exc:
+            if "native" in locals():
+                try:
+                    backend.release_buffer(native)
+                except Exception:
+                    pass
+            if isinstance(exc, EngineFailure):
+                raise
+            raise DecodeRefusal(
+                "decoded pixels were refused by the image engine",
+                diagnostic_ref="engine.pixel-import",
+            ) from exc
+        reference = BufferRef(token, extent, spec, revision, digest)
+        self._buffers[token] = (reference, native)
+        return reference
+
+    def compile_graph(self, graph: GraphSpec, *, cancel: CancelToken) -> ObjectId:
+        backend, _ = self._state()
+        cancel.raise_if_cancelled()
+        if not isinstance(graph, GraphSpec):
+            raise InvalidGraph("OD-7 compiler requires a closed graph spec")
+        assert self._capabilities is not None
+        if graph.compatibility_digest != self._capabilities.compatibility_digest:
+            raise IncompatibleRuntime("graph compatibility identity differs from runtime")
+        if graph.digest in self._graphs:
+            return graph.digest
+        for node in graph.nodes:
+            self._policy.validate(node.output_spec)
+            profile = node.output_spec.profile_digest
+            if profile is not None and profile not in self._profiles:
+                raise DecodeRefusal("graph output profile is not registered")
+        compiler = _GraphPlanCompiler(self._runtime._configuration.operation_registry)
+        plan = compiler.compile(
+            graph,
+            tuple(item[0] for item in self._buffers.values()),
+            tuple(sorted(self._profiles)),
+        )
+        try:
+            native = backend.compile_plan(
+                plan,
+                {token: item[1] for token, item in self._buffers.items()},
+                dict(self._profiles),
+            )
+            cancel.raise_if_cancelled()
+        except Exception as exc:
+            if "native" in locals():
+                try:
+                    backend.release_graph(native)
+                except Exception:
+                    pass
+            if isinstance(exc, EngineFailure):
+                raise
+            raise InvalidGraph(
+                "closed graph compilation failed",
+                diagnostic_ref="engine.graph-compile",
+            ) from exc
+        self._graphs[graph.digest] = native
+        self._plans[graph.digest] = plan
+        return graph.digest
+
+    def compiled_plan(self, graph_digest: ObjectId) -> CompiledGraphPlan:
+        self._state()
+        try:
+            return self._plans[graph_digest]
+        except KeyError as exc:
+            raise InvalidGraph("graph has not been compiled") from exc
+
+    def render_tile(self, request: TileRequest, *, cancel: CancelToken) -> TileResult:
+        self._state()
+        cancel.raise_if_cancelled()
+        raise UnsupportedOperation("bounded native tile rendering enters integration slice 5/7")
+
+    def build_proxy(
+        self,
+        requests: tuple[TileRequest, ...],
+        *,
+        cancel: CancelToken,
+    ) -> tuple[TileResult, ...]:
+        self._state()
+        cancel.raise_if_cancelled()
+        raise UnsupportedOperation("native proxy construction enters integration slice 4/7")
+
+    def export_tiles(
+        self,
+        requests: tuple[TileRequest, ...],
+        *,
+        cancel: CancelToken,
+    ) -> tuple[TileResult, ...]:
+        self._state()
+        cancel.raise_if_cancelled()
+        raise UnsupportedOperation("native export enters integration slice 6/7")
+
+    def close(self) -> None:
+        backend, _ = self._state()
+        failure: Exception | None = None
+        while self._graphs:
+            _, graph = self._graphs.popitem()
+            try:
+                backend.release_graph(graph)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+            finally:
+                del graph
+        while self._buffers:
+            _, (_, native) = self._buffers.popitem()
+            try:
+                backend.release_buffer(native)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+            finally:
+                del native
+        gc.collect()
+        self._plans.clear()
+        self._profiles.clear()
+        self._capabilities = None
+        try:
+            self._runtime.close()
+        except Exception as exc:
+            if failure is None:
+                failure = exc
+        if failure is not None:
+            raise InternalEngineFailure(
+                "OD-7 engine shutdown failed",
+                diagnostic_ref="engine.shutdown",
+            ) from failure
+
 
 __all__ = (
+    "BufferBinding",
+    "CompiledGraphPlan",
+    "CompiledPlanNode",
     "ImageRuntime",
     "NativeRuntimeBackend",
+    "Od7ImageEngine",
+    "PlanInput",
+    "ProfileBinding",
     "RuntimeHandle",
     "RuntimeProcessGuard",
     "STARTUP_SEQUENCE",

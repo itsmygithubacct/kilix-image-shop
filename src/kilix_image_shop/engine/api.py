@@ -255,17 +255,20 @@ class TextSourceParameters:
     text_digest: ObjectId
     font_digest: ObjectId
     render_identity: ObjectId
+    extent: Rect
 
     def __post_init__(self) -> None:
         _require_type(self.text_digest, ObjectId, "text object")
         _require_type(self.font_digest, ObjectId, "font object")
         _require_type(self.render_identity, ObjectId, "text render identity")
+        _require_type(self.extent, Rect, "text raster extent")
 
-    def to_data(self) -> dict[str, str]:
+    def to_data(self) -> dict[str, object]:
         return {
             "textSha256": self.text_digest.value,
             "fontSha256": self.font_digest.value,
             "renderIdentitySha256": self.render_identity.value,
+            "extent": self.extent.to_data(),
         }
 
 
@@ -715,6 +718,14 @@ class EngineCapabilities:
 class ImageEngine(Protocol):
     def start(self) -> EngineCapabilities: ...
 
+    def register_profile(
+        self,
+        payload: bytes,
+        digest: ObjectId,
+        *,
+        cancel: CancelToken,
+    ) -> ObjectId: ...
+
     def import_pixels(
         self,
         payload: bytes,
@@ -765,6 +776,7 @@ class FakeImageEngine:
         self._closed = False
         self._buffers: dict[str, BufferRef] = {}
         self._graphs: dict[ObjectId, GraphSpec] = {}
+        self._profiles: set[ObjectId] = set()
 
     def _bind_or_check_owner(self) -> None:
         current = threading.get_ident()
@@ -829,6 +841,24 @@ class FakeImageEngine:
         cancel.raise_if_cancelled()
         return result
 
+    def register_profile(
+        self,
+        payload: bytes,
+        digest: ObjectId,
+        *,
+        cancel: CancelToken,
+    ) -> ObjectId:
+        self._require_started()
+        cancel.raise_if_cancelled()
+        if not isinstance(payload, bytes) or not 0 < len(payload) <= 4_194_304:
+            raise DecodeRefusal("ICC profile must be bounded immutable bytes")
+        _require_type(digest, ObjectId, "ICC profile digest")
+        if ObjectId.from_bytes(payload) != digest:
+            raise DecodeRefusal("ICC profile bytes do not match their content identity")
+        self._profiles.add(digest)
+        cancel.raise_if_cancelled()
+        return digest
+
     def compile_graph(self, graph: GraphSpec, *, cancel: CancelToken) -> ObjectId:
         self._require_started()
         cancel.raise_if_cancelled()
@@ -839,6 +869,11 @@ class FakeImageEngine:
             if node.kind not in self._capabilities.supported_nodes:
                 raise UnsupportedOperation("graph family is unavailable")
             self._validate_spec(node.output_spec)
+            if (
+                node.output_spec.profile_digest is not None
+                and node.output_spec.profile_digest not in self._profiles
+            ):
+                raise DecodeRefusal("graph profile has not been registered")
             if isinstance(node.parameters, PixelSourceParameters):
                 matching_buffers = tuple(
                     item
@@ -857,6 +892,17 @@ class FakeImageEngine:
                 ):
                     raise InvalidGraph(
                         "pixel-source extent or format differs from its imported buffer"
+                    )
+            if isinstance(node.parameters, TextSourceParameters):
+                if not any(
+                    item.content_digest == node.parameters.render_identity
+                    and item.extent == node.parameters.extent
+                    and item.spec == node.output_spec
+                    and item.revision == graph.revision
+                    for item in self._buffers.values()
+                ):
+                    raise DecodeRefusal(
+                        "text source has no matching raster buffer for this revision"
                     )
         digest = graph.digest
         self._graphs[digest] = graph
@@ -942,6 +988,7 @@ class FakeImageEngine:
         self._bind_or_check_owner()
         self._buffers.clear()
         self._graphs.clear()
+        self._profiles.clear()
         self._started = False
         self._closed = True
 

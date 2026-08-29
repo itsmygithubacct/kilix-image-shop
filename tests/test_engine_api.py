@@ -46,8 +46,12 @@ from kilix_image_shop.engine.formats import RenderTier, TierFormatPolicy
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 REVISION = RevisionId("00000000-0000-4000-8000-000000000115")
 STALE_REVISION = RevisionId("00000000-0000-4000-8000-000000000116")
-PROFILE_A = ObjectId("a" * 64)
-PROFILE_B = ObjectId("b" * 64)
+PROFILE_A_BYTES = b"synthetic ICC profile A"
+PROFILE_B_BYTES = b"synthetic ICC profile B"
+PROFILE_A = ObjectId.from_bytes(PROFILE_A_BYTES)
+PROFILE_B = ObjectId.from_bytes(PROFILE_B_BYTES)
+TEXT_RASTER_PAYLOAD = bytes(reversed(range(32)))
+TEXT_RASTER_DIGEST = ObjectId.from_bytes(TEXT_RASTER_PAYLOAD)
 
 
 def colour_spec(profile: ObjectId = PROFILE_A) -> PixelSpec:
@@ -79,7 +83,8 @@ def full_graph(
             TextSourceParameters(
                 ObjectId("c" * 64),
                 ObjectId("d" * 64),
-                ObjectId("e" * 64),
+                TEXT_RASTER_DIGEST,
+                bounds,
             ),
             colour_a,
         ),
@@ -247,7 +252,10 @@ class GraphContractTests(unittest.TestCase):
             GraphNodeKind.TEXT_SOURCE,
             (),
             TextSourceParameters(
-                ObjectId("7" * 64), ObjectId("8" * 64), ObjectId("9" * 64)
+                ObjectId("7" * 64),
+                ObjectId("8" * 64),
+                ObjectId("9" * 64),
+                Rect(0, 0, 1, 1),
             ),
             colour_spec(PROFILE_B),
         )
@@ -286,6 +294,8 @@ class FakeEngineTests(unittest.TestCase):
         self.engine = FakeImageEngine()
         self.capabilities = self.engine.start()
         self.cancel = CancelToken()
+        self.engine.register_profile(PROFILE_A_BYTES, PROFILE_A, cancel=self.cancel)
+        self.engine.register_profile(PROFILE_B_BYTES, PROFILE_B, cancel=self.cancel)
         self.pixel_payload = bytes(range(32))
         self.mask_payload = bytes((0, 85, 170, 255))
         self.pixel_buffer = self.engine.import_pixels(
@@ -299,6 +309,13 @@ class FakeEngineTests(unittest.TestCase):
             self.mask_payload,
             extent=Rect(0, 0, 2, 2),
             spec=PixelSpec.foreground_mask(),
+            revision=REVISION,
+            cancel=self.cancel,
+        )
+        self.text_buffer = self.engine.import_pixels(
+            TEXT_RASTER_PAYLOAD,
+            extent=Rect(0, 0, 2, 2),
+            spec=colour_spec(),
             revision=REVISION,
             cancel=self.cancel,
         )

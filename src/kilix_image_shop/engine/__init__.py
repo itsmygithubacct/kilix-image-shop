@@ -15,13 +15,14 @@ from .api import (
     TileRequest,
     TileResult,
 )
-from .compatibility import RuntimeConfiguration, require_compatible
+from .compatibility import OperationRegistry, RuntimeConfiguration, require_compatible
 from .formats import RenderTier, TierFormatPolicy
-from .runtime import ImageRuntime, RuntimeHandle
+from .runtime import CompiledGraphPlan, ImageRuntime, Od7ImageEngine, RuntimeHandle
 
 __all__ = (
     "BufferRef",
     "CancelToken",
+    "CompiledGraphPlan",
     "EngineCapabilities",
     "EngineFailure",
     "FakeImageEngine",
@@ -30,6 +31,8 @@ __all__ = (
     "GraphSpec",
     "ImageEngine",
     "ImageRuntime",
+    "Od7ImageEngine",
+    "OperationRegistry",
     "PixelFormat",
     "PixelSpec",
     "RenderTier",

@@ -14,6 +14,7 @@ import threading
 import unittest
 from unittest import mock
 
+from engine_registry_fixtures import synthetic_registry
 from kilix_image_shop.domain.color import (
     AlphaAssociation,
     ConversionPolicy,
@@ -35,11 +36,11 @@ from kilix_image_shop.engine.compatibility import (
     H0_TILE_CACHE_BYTES,
     MINIMUM_OPERATIONS,
     NativeObservation,
+    OperationRegistry,
     PACKAGE_GROUP_ID,
     PYTHON_GI_PACKAGE_VERSION,
     RuntimeConfiguration,
     compatibility_differences,
-    operation_registry_digest,
     require_compatible,
 )
 from kilix_image_shop.engine.runtime import (
@@ -57,32 +58,12 @@ GROUP_BYTES = b'{"group":"plebian.f115.image-engine","synthetic":true}\n'
 
 
 def operation_population() -> tuple[str, ...]:
-    svg_aliases = (
-        "svg:clear",
-        "svg:color-burn",
-        "svg:color-dodge",
-        "svg:darken",
-        "svg:difference",
-        "svg:dst",
-        "svg:dst-atop",
-        "svg:dst-in",
-        "svg:dst-out",
-        "svg:dst-over",
-        "svg:exclusion",
-        "svg:hard-light",
-        "svg:lighten",
-        "svg:overlay",
-        "svg:plus",
-        "svg:screen",
-        "svg:src",
-        "svg:src-atop",
-        "svg:src-in",
-        "svg:src-out",
-        "svg:src-over",
-        "svg:xor",
+    native = set(synthetic_registry().native_operations)
+    extras = tuple(
+        f"gegl:synthetic-{index:03d}"
+        for index in range(EXPECTED_OPERATION_COUNT - len(native))
     )
-    extras = tuple(f"gegl:synthetic-{index:03d}" for index in range(170))
-    result = tuple(sorted((*MINIMUM_OPERATIONS, *extras, *svg_aliases)))
+    result = tuple(sorted((*native, *extras)))
     assert len(result) == EXPECTED_OPERATION_COUNT
     return result
 
@@ -91,7 +72,7 @@ def compatibility(
     *,
     group_digest: ObjectId,
     plugin_digest: ObjectId,
-    required_operations: tuple[str, ...] = MINIMUM_OPERATIONS,
+    registry: OperationRegistry,
 ) -> EngineCompatibility:
     return EngineCompatibility(
         schema=EngineCompatibility.SCHEMA,
@@ -102,7 +83,7 @@ def compatibility(
         python_gi_version=PYTHON_GI_PACKAGE_VERSION,
         gi_file_digest=GI_DIGEST,
         operation_count=EXPECTED_OPERATION_COUNT,
-        operation_set_digest=operation_registry_digest(required_operations),
+        operation_set_digest=registry.digest,
         plugin_tree_digest=plugin_digest,
         working_format="RGBA u16",
         alpha_association=AlphaAssociation.STRAIGHT,
@@ -161,6 +142,11 @@ class FakeNativeBackend:
         self.events.append("observe")
         return self.identity
 
+    def verify_operation_registry(self, registry: OperationRegistry) -> None:
+        self.events.append("registry")
+        if registry.digest != synthetic_registry().digest:
+            raise IncompatibleRuntime("synthetic operation registry differs")
+
     def smoke_test(self) -> None:
         self.events.append("smoke")
         if self.smoke_failure is not None:
@@ -180,13 +166,15 @@ class RuntimeFixture(unittest.TestCase):
         self.plugin_manifest = self.root / "plugins.json"
         self.group_record.write_bytes(GROUP_BYTES)
         self.plugin_manifest.write_bytes(PLUGIN_BYTES)
+        self.registry = synthetic_registry()
         self.expected = compatibility(
             group_digest=ObjectId.from_bytes(GROUP_BYTES),
             plugin_digest=ObjectId.from_bytes(PLUGIN_BYTES),
+            registry=self.registry,
         )
         self.configuration = RuntimeConfiguration(
             expected=self.expected,
-            required_operations=MINIMUM_OPERATIONS,
+            operation_registry=self.registry,
             package_group_record=self.group_record,
             plugin_tree_manifest=self.plugin_manifest,
             cache_root=self.root / "cache",
@@ -238,20 +226,27 @@ class ConfigurationTests(RuntimeFixture):
         self.assertFalse(self.expected.use_opencl)
         self.assertTrue(self.configuration.mipmap_rendering)
 
-    def test_required_operation_registry_is_canonical_and_digest_bound(self) -> None:
+    def test_operation_registry_is_canonical_complete_and_digest_bound(self) -> None:
         self.assertEqual(len(MINIMUM_OPERATIONS), 11)
-        self.assertEqual(tuple(sorted(MINIMUM_OPERATIONS)), MINIMUM_OPERATIONS)
+        self.assertEqual(len(self.registry.definitions), 46)
+        self.assertEqual(len({item.family for item in self.registry.definitions}), 8)
+        self.assertEqual(self.registry.digest, self.expected.operation_set_digest)
         self.assertEqual(
-            operation_registry_digest(MINIMUM_OPERATIONS),
-            self.expected.operation_set_digest,
+            OperationRegistry.from_bytes(self.registry.canonical_bytes()),
+            self.registry,
         )
+        duplicate = self.registry.canonical_bytes().replace(
+            b'"schema":', b'"schema":"duplicate","schema":', 1
+        )
+        with self.assertRaises(InvalidGraph):
+            OperationRegistry.from_bytes(duplicate)
         with self.assertRaises(InvalidGraph):
             RuntimeConfiguration(
                 expected=dataclasses.replace(
                     self.expected,
                     operation_set_digest=ObjectId("0" * 64),
                 ),
-                required_operations=MINIMUM_OPERATIONS,
+                operation_registry=self.registry,
                 package_group_record=self.group_record,
                 plugin_tree_manifest=self.plugin_manifest,
                 cache_root=self.root / "cache-2",
@@ -269,7 +264,7 @@ class ConfigurationTests(RuntimeFixture):
             with self.subTest(replacement=replacement), self.assertRaises(InvalidGraph):
                 RuntimeConfiguration(
                     expected=dataclasses.replace(self.expected, **replacement),
-                    required_operations=MINIMUM_OPERATIONS,
+                    operation_registry=self.registry,
                     package_group_record=self.group_record,
                     plugin_tree_manifest=self.plugin_manifest,
                     cache_root=self.root / "cache-3",
@@ -294,7 +289,7 @@ class StartupTests(RuntimeFixture):
         self.assertEqual(loader_events, ["load"])
         self.assertEqual(
             backend.events,
-            ["initialize", "configure", "read", "observe", "smoke"],
+            ["initialize", "configure", "read", "observe", "registry", "smoke"],
         )
         self.assertEqual(
             backend.values,
@@ -373,7 +368,7 @@ class StartupTests(RuntimeFixture):
                 self.expected,
                 package_group_digest=ObjectId("9" * 64),
             ),
-            required_operations=MINIMUM_OPERATIONS,
+            operation_registry=self.registry,
             package_group_record=self.group_record,
             plugin_tree_manifest=self.plugin_manifest,
             cache_root=self.root / "unused-cache",
