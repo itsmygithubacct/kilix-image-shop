@@ -498,19 +498,27 @@ class _GraphPlanCompiler:
                 )
             elif isinstance(parameters, OpacityBlendParameters):
                 mode_key = f"blend.mode.{parameters.blend_mode.value}"
-                self._halo(node, "blend.opacity", mode_key)
+                keys = (
+                    ("blend.opacity",)
+                    if len(inputs) == 1
+                    else ("blend.opacity", mode_key)
+                )
+                self._halo(node, *keys)
                 opacity = self._add(
                     f"{node.node_id}__opacity",
                     "blend.opacity",
                     {"value": parameters.opacity_u16 / 65535.0},
-                    ((inputs[1], "input"),),
+                    ((inputs[-1], "input"),),
                 )
-                graph_outputs[node.node_id] = self._add(
-                    f"{node.node_id}__blend",
-                    mode_key,
-                    {},
-                    ((inputs[0], "input"), (opacity, "aux")),
-                )
+                if len(inputs) == 1:
+                    graph_outputs[node.node_id] = opacity
+                else:
+                    graph_outputs[node.node_id] = self._add(
+                        f"{node.node_id}__blend",
+                        mode_key,
+                        {},
+                        ((inputs[0], "input"), (opacity, "aux")),
+                    )
             elif isinstance(parameters, MaskParameters):
                 keys = ["mask.apply"]
                 mask_input = inputs[1]

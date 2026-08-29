@@ -515,7 +515,9 @@ _INPUT_ARITY: dict[GraphNodeKind, tuple[int, int | None]] = {
     GraphNodeKind.PIXEL_SOURCE: (0, 0),
     GraphNodeKind.TEXT_SOURCE: (0, 0),
     GraphNodeKind.AFFINE_TRANSFORM_CROP: (1, 1),
-    GraphNodeKind.OPACITY_BLEND: (2, 2),
+    # One input applies opacity to a bottom layer before transparent
+    # composition; two inputs apply opacity and blend over a backdrop.
+    GraphNodeKind.OPACITY_BLEND: (1, 2),
     GraphNodeKind.MASK: (2, 2),
     GraphNodeKind.ADJUSTMENT: (1, 1),
     GraphNodeKind.ORDERED_GROUP: (1, None),
@@ -1036,8 +1038,12 @@ class ImageEngine(Protocol):
 class FakeImageEngine:
     """Deterministic in-memory conformance double with owner-thread checks."""
 
-    def __init__(self) -> None:
-        compatibility_digest = ObjectId.from_bytes(b"kilix-image-shop/fake-engine/v1\n")
+    def __init__(self, *, compatibility_digest: ObjectId | None = None) -> None:
+        if compatibility_digest is None:
+            compatibility_digest = ObjectId.from_bytes(
+                b"kilix-image-shop/fake-engine/v1\n"
+            )
+        _require_type(compatibility_digest, ObjectId, "fake compatibility digest")
         self._capabilities = EngineCapabilities(
             engine_id="kilix.fake-engine/v1",
             compatibility_digest=compatibility_digest,
@@ -1318,18 +1324,29 @@ class FakeImageEngine:
             * request.destination.height
             * request.spec.pixel_format.bytes_per_pixel
         )
-        seed = hashlib.sha256(
-            b"kilix-image-shop/fake-tile/v1\0" + request.canonical_bytes()
-        ).digest()
         chunks: list[bytes] = []
-        remaining = byte_count
-        while remaining:
+        bytes_per_pixel = request.spec.pixel_format.bytes_per_pixel
+        for y in range(
+            request.destination.y,
+            request.destination.y + request.destination.height,
+        ):
             cancel.raise_if_cancelled()
-            chunk_length = min(remaining, 65_536)
-            repeats = (chunk_length + len(seed) - 1) // len(seed)
-            chunks.append((seed * repeats)[:chunk_length])
-            remaining -= chunk_length
+            for x in range(
+                request.destination.x,
+                request.destination.x + request.destination.width,
+            ):
+                identity = (
+                    b"kilix-image-shop/fake-pixel/v1\0"
+                    + request.graph_digest.value.encode("ascii")
+                    + request.revision.value.encode("ascii")
+                    + request.level.to_bytes(1, "big")
+                    + x.to_bytes(8, "big", signed=True)
+                    + y.to_bytes(8, "big", signed=True)
+                )
+                chunks.append(hashlib.sha256(identity).digest()[:bytes_per_pixel])
         payload = b"".join(chunks)
+        if len(payload) != byte_count:
+            raise InternalEngineFailure("fake tile generator produced a wrong byte count")
         cancel.raise_if_cancelled()
         return TileResult(
             source=request.source,
