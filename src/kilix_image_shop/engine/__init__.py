@@ -15,7 +15,9 @@ from .api import (
     TileRequest,
     TileResult,
 )
+from .compatibility import RuntimeConfiguration, require_compatible
 from .formats import RenderTier, TierFormatPolicy
+from .runtime import ImageRuntime, RuntimeHandle
 
 __all__ = (
     "BufferRef",
@@ -27,10 +29,14 @@ __all__ = (
     "GraphNodeSpec",
     "GraphSpec",
     "ImageEngine",
+    "ImageRuntime",
     "PixelFormat",
     "PixelSpec",
     "RenderTier",
+    "RuntimeConfiguration",
+    "RuntimeHandle",
     "TierFormatPolicy",
     "TileRequest",
     "TileResult",
+    "require_compatible",
 )
