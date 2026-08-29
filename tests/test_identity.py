@@ -10,7 +10,7 @@ import kilix_image_shop
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-EXPECTED_PATHS = {
+BIRTH_PATHS = {
     ".gitignore",
     ".python-version",
     "CHANGELOG.md",
@@ -102,11 +102,18 @@ class IdentityTests(unittest.TestCase):
             self.assertIn(action, publication)
         self.assertEqual(git("remote"), "")
 
-    def test_tracked_manifest_is_exact(self) -> None:
+    def test_tracked_manifest_retains_the_exact_birth_surface(self) -> None:
         tracked = set(git("ls-files").splitlines())
-        self.assertEqual(tracked, EXPECTED_PATHS)
+        self.assertTrue(BIRTH_PATHS <= tracked)
+        self.assertFalse(
+            {
+                path
+                for path in tracked
+                if path.startswith(("evidence/", "research/", "planning/"))
+            }
+        )
 
-    def test_package_surface_is_identity_only(self) -> None:
+    def test_package_root_stays_adapter_free(self) -> None:
         package_files = {
             path.relative_to(ROOT).as_posix()
             for path in (ROOT / "src" / "kilix_image_shop").iterdir()
@@ -122,7 +129,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_no_private_workspace_paths(self) -> None:
         forbidden = ("/home/" + "pleb", "research/" + "gpu_terminal")
-        for relative in EXPECTED_PATHS:
+        for relative in git("ls-files").splitlines():
             data = (ROOT / relative).read_text(errors="ignore")
             for value in forbidden:
                 self.assertNotIn(value, data, relative)

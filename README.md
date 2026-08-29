@@ -1,8 +1,11 @@
 # Kilix Image Shop
 
 Kilix Image Shop is the local-first image editor planned for Plebian OS 0.2.1.
-This repository currently contains only its identity, licence, locked build
-boundary, and entry tests.
+The repository now contains its immutable document-domain slice: typed content
+identities, checked geometry and decode budgets, closed layer/mask/provenance
+values, the `kilix.imageshop.project/v1` schema, canonical serialization, and
+revision-checked pure command reduction. Native rendering, persistence,
+history, presentation, and provider adapters enter as separate reviewed slices.
 
 ## Product boundary
 
@@ -13,8 +16,8 @@ the contained graphical surface. It must run on H0 without a model, GPU, or
 network.
 
 Model-backed operations form a later integration unit. No model runtime,
-contract carrier, background-removal adapter, generation adapter, or GUI toolkit
-is included in this initial skeleton.
+background-removal adapter, generation adapter, or GUI toolkit is included in
+the current core.
 
 The selected native image engine is the Plebian OS lazy group
 `plebian.f115.image-engine`, containing the OD-7 GEGL/babl closure. It is an

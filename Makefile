@@ -3,6 +3,10 @@ UV_RELEASE_VERSION := uv 0.12.5 (x86_64-unknown-linux-gnu)
 UV_RELEASE_SHA256 := b65f23a420c4acc96427efb30e5ed9bc0f7e25d2d712000f6ede77c1a0de5f46
 SYSTEM_PYTHON := /usr/bin/python3
 VENV_PYTHON := .venv/bin/python
+BIRTH_PATHS := .gitignore .python-version CHANGELOG.md LICENSE Makefile NOTICE \
+	PUBLICATION.md README.md THIRD-PARTY-NOTICES.md VERSION pyproject.toml \
+	src/kilix_image_shop/__init__.py src/kilix_image_shop/py.typed \
+	tests/test_identity.py uv.lock
 
 .DEFAULT_GOAL := check
 
@@ -55,7 +59,7 @@ legal-check: build
 hygiene-check:
 	@set -eu; \
 	test "$$(git remote | wc -l)" -eq 0; \
-	test "$$(git ls-files | wc -l)" -eq 15; \
+	for path in $(BIRTH_PATHS); do git ls-files --error-unmatch "$$path" >/dev/null; done; \
 	if git rev-parse --verify HEAD >/dev/null 2>&1; then \
 		hygiene-scan; \
 	else \

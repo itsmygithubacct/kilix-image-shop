@@ -1,0 +1,516 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kilix.invalid/schemas/kilix.imageshop.project-v1.schema.json",
+  "title": "kilix.imageshop.project/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "documentId",
+    "revisionId",
+    "canvas",
+    "colour",
+    "engineCompatibility",
+    "assets",
+    "rootLayerIds",
+    "layers",
+    "selection",
+    "provenance"
+  ],
+  "properties": {
+    "schema": { "const": "kilix.imageshop.project/v1" },
+    "documentId": { "$ref": "#/$defs/uuid" },
+    "revisionId": { "$ref": "#/$defs/uuid" },
+    "canvas": { "$ref": "#/$defs/canvas" },
+    "colour": { "$ref": "#/$defs/colour" },
+    "engineCompatibility": { "$ref": "#/$defs/engineCompatibility" },
+    "assets": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/asset" }
+    },
+    "rootLayerIds": {
+      "type": "array",
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/uuid" }
+    },
+    "layers": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/layer" }
+    },
+    "selection": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/selection" }
+      ]
+    },
+    "provenance": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/provenance" }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "u16": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "affine": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": { "type": "number" }
+    },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "originX", "originY"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "originX": { "type": "integer" },
+        "originY": { "type": "integer" }
+      }
+    },
+    "colour": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workingProfileSha256", "declaredSpace", "conversionPolicy"],
+      "properties": {
+        "workingProfileSha256": { "$ref": "#/$defs/sha256" },
+        "declaredSpace": {
+          "enum": ["srgb", "display-p3", "adobe-rgb-1998", "custom-icc"]
+        },
+        "conversionPolicy": {
+          "enum": ["relative-colorimetric", "perceptual", "preserve-numbers"]
+        }
+      }
+    },
+    "tileHalo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "pixels"],
+      "properties": {
+        "family": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "pixels": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "engineCompatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "packageGroupId",
+        "packageGroupSha256",
+        "geglVersion",
+        "bablVersion",
+        "pythonGiVersion",
+        "giFileSha256",
+        "operationCount",
+        "operationSetSha256",
+        "pluginTreeSha256",
+        "workingFormat",
+        "alphaAssociation",
+        "maskFormat",
+        "maskSemantics",
+        "workingProfileSha256",
+        "conversionPolicy",
+        "resamplingKernel",
+        "edgeMode",
+        "tileHalos",
+        "useOpencl",
+        "tileCacheBytes",
+        "swapCompression",
+        "threads",
+        "deterministicPreset",
+        "bablTolerance"
+      ],
+      "properties": {
+        "schema": { "const": "kilix.imageshop.engine-compatibility/v1" },
+        "packageGroupId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$"
+        },
+        "packageGroupSha256": { "$ref": "#/$defs/sha256" },
+        "geglVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "bablVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "pythonGiVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "giFileSha256": { "$ref": "#/$defs/sha256" },
+        "operationCount": { "type": "integer", "minimum": 1 },
+        "operationSetSha256": { "$ref": "#/$defs/sha256" },
+        "pluginTreeSha256": { "$ref": "#/$defs/sha256" },
+        "workingFormat": { "enum": ["RGBA u16", "RGBA float"] },
+        "alphaAssociation": { "enum": ["straight", "premultiplied", "opaque"] },
+        "maskFormat": { "const": "Y u8" },
+        "maskSemantics": { "const": "foreground-alpha" },
+        "workingProfileSha256": { "$ref": "#/$defs/sha256" },
+        "conversionPolicy": {
+          "enum": ["relative-colorimetric", "perceptual", "preserve-numbers"]
+        },
+        "resamplingKernel": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "edgeMode": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tileHalos": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/tileHalo" }
+        },
+        "useOpencl": { "type": "boolean" },
+        "tileCacheBytes": { "type": "integer", "minimum": 1 },
+        "swapCompression": { "enum": ["fast", "zlib", "none"] },
+        "threads": { "type": "integer", "minimum": 1 },
+        "deterministicPreset": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "bablTolerance": { "const": "0.0" }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "byteCount",
+        "mediaType",
+        "width",
+        "height",
+        "profileSha256",
+        "importPolicy",
+        "locator"
+      ],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byteCount": { "type": "integer", "minimum": 1 },
+        "mediaType": { "enum": ["image/png", "image/jpeg", "image/webp", "image/tiff"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "profileSha256": { "$ref": "#/$defs/sha256" },
+        "importPolicy": {
+          "enum": ["copied", "external-absolute", "external-portable-relative"]
+        },
+        "locator": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 4096 }
+          ]
+        }
+      }
+    },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "value": {
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "integer" },
+            { "type": "number" },
+            { "type": "string", "minLength": 1, "maxLength": 4096 },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4096,
+              "items": { "type": "number" }
+            }
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "operation",
+        "provider",
+        "modelSha256",
+        "runtimeSha256",
+        "prompt",
+        "seed",
+        "parameters",
+        "sourceLayerSha256",
+        "occurredAt"
+      ],
+      "properties": {
+        "schema": { "const": "kilix.imageshop.operation-provenance/v1" },
+        "operation": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$"
+        },
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$"
+        },
+        "modelSha256": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+        },
+        "runtimeSha256": { "$ref": "#/$defs/sha256" },
+        "prompt": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 131072 }
+          ]
+        },
+        "seed": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": 0 }
+          ]
+        },
+        "parameters": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": { "$ref": "#/$defs/parameter" }
+        },
+        "sourceLayerSha256": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+        },
+        "occurredAt": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "mask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objectSha256",
+        "width",
+        "height",
+        "originX",
+        "originY",
+        "format",
+        "semantics",
+        "source",
+        "sourceRefSha256",
+        "operationProvenance"
+      ],
+      "properties": {
+        "objectSha256": { "$ref": "#/$defs/sha256" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "originX": { "type": "integer" },
+        "originY": { "type": "integer" },
+        "format": { "const": "Y u8" },
+        "semantics": { "const": "foreground-alpha" },
+        "source": { "enum": ["hand-painted", "selection", "operation"] },
+        "sourceRefSha256": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+        },
+        "operationProvenance": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/provenance" }]
+        }
+      }
+    },
+    "blendMode": {
+      "enum": [
+        "normal",
+        "multiply",
+        "screen",
+        "overlay",
+        "darken",
+        "lighten",
+        "color-dodge",
+        "color-burn",
+        "hard-light",
+        "soft-light",
+        "difference",
+        "exclusion",
+        "hue",
+        "saturation",
+        "color",
+        "luminosity"
+      ]
+    },
+    "maskOrNull": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/mask" }]
+    },
+    "pixelLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type", "id", "name", "visible", "opacityU16", "blendMode", "mask",
+        "assetSha256", "transform", "operationProvenance"
+      ],
+      "properties": {
+        "type": { "const": "pixel" },
+        "id": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "visible": { "type": "boolean" },
+        "opacityU16": { "$ref": "#/$defs/u16" },
+        "blendMode": { "$ref": "#/$defs/blendMode" },
+        "mask": { "$ref": "#/$defs/maskOrNull" },
+        "assetSha256": { "$ref": "#/$defs/sha256" },
+        "transform": { "$ref": "#/$defs/affine" },
+        "operationProvenance": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/provenance" }]
+        }
+      }
+    },
+    "adjustmentLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type", "id", "name", "visible", "opacityU16", "blendMode", "mask",
+        "adjustment"
+      ],
+      "properties": {
+        "type": { "const": "adjustment" },
+        "id": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "visible": { "type": "boolean" },
+        "opacityU16": { "$ref": "#/$defs/u16" },
+        "blendMode": { "$ref": "#/$defs/blendMode" },
+        "mask": { "$ref": "#/$defs/maskOrNull" },
+        "adjustment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "parameters"],
+          "properties": {
+            "id": {
+              "enum": [
+                "exposure", "contrast", "curves", "levels", "white-balance",
+                "saturation", "hue", "sharpen", "blur"
+              ]
+            },
+            "parameters": {
+              "type": "array",
+              "maxItems": 10000,
+              "items": { "$ref": "#/$defs/parameter" }
+            }
+          }
+        }
+      }
+    },
+    "textLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type", "id", "name", "visible", "opacityU16", "blendMode", "mask",
+        "text", "layout", "fontSha256", "faceIndex", "axes", "fallbacks",
+        "previewAssetSha256", "transform"
+      ],
+      "properties": {
+        "type": { "const": "text" },
+        "id": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "visible": { "type": "boolean" },
+        "opacityU16": { "$ref": "#/$defs/u16" },
+        "blendMode": { "$ref": "#/$defs/blendMode" },
+        "mask": { "$ref": "#/$defs/maskOrNull" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1048576 },
+        "layout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height", "alignment", "language"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 },
+            "alignment": { "enum": ["start", "center", "end", "justify"] },
+            "language": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        },
+        "fontSha256": { "$ref": "#/$defs/sha256" },
+        "faceIndex": { "type": "integer", "minimum": 0 },
+        "axes": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tag", "value"],
+            "properties": {
+              "tag": { "type": "string", "minLength": 4, "maxLength": 4 },
+              "value": { "type": "number" }
+            }
+          }
+        },
+        "fallbacks": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "requestedFamily", "resolvedFamily", "resolvedFontSha256", "reason"
+            ],
+            "properties": {
+              "requestedFamily": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "resolvedFamily": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "resolvedFontSha256": {
+                "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+              },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+            }
+          }
+        },
+        "previewAssetSha256": { "$ref": "#/$defs/sha256" },
+        "transform": { "$ref": "#/$defs/affine" }
+      }
+    },
+    "groupLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type", "id", "name", "visible", "opacityU16", "blendMode", "mask",
+        "childLayerIds", "transform"
+      ],
+      "properties": {
+        "type": { "const": "group" },
+        "id": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "visible": { "type": "boolean" },
+        "opacityU16": { "$ref": "#/$defs/u16" },
+        "blendMode": { "$ref": "#/$defs/blendMode" },
+        "mask": { "$ref": "#/$defs/maskOrNull" },
+        "childLayerIds": {
+          "type": "array",
+          "maxItems": 100000,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/uuid" }
+        },
+        "transform": { "$ref": "#/$defs/affine" }
+      }
+    },
+    "layer": {
+      "oneOf": [
+        { "$ref": "#/$defs/pixelLayer" },
+        { "$ref": "#/$defs/adjustmentLayer" },
+        { "$ref": "#/$defs/textLayer" },
+        { "$ref": "#/$defs/groupLayer" }
+      ]
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "objectSha256", "bounds"],
+      "properties": {
+        "kind": { "enum": ["vector", "raster"] },
+        "objectSha256": { "$ref": "#/$defs/sha256" },
+        "bounds": { "$ref": "#/$defs/rect" }
+      }
+    }
+  }
+}
