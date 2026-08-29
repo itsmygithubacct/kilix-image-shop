@@ -5,6 +5,7 @@ import dataclasses
 import pathlib
 import threading
 import unittest
+import uuid
 
 from kilix_image_shop.domain.color import AlphaAssociation, ConversionPolicy
 from kilix_image_shop.domain.geometry import AffineTransform, Rect
@@ -28,6 +29,7 @@ from kilix_image_shop.engine.api import (
     IncompatibleRuntime,
     InternalEngineFailure,
     InvalidGraph,
+    MaskTileUpdate,
     MaskParameters,
     MaskSemantics,
     OpacityBlendParameters,
@@ -39,6 +41,9 @@ from kilix_image_shop.engine.api import (
     TextSourceParameters,
     TileRequest,
     UnsupportedOperation,
+    mask_digest_index,
+    mask_manifest_digest,
+    mask_tile_rectangles,
 )
 from kilix_image_shop.engine.formats import RenderTier, TierFormatPolicy
 
@@ -202,6 +207,26 @@ class PixelContractTests(unittest.TestCase):
             policy.validate(PixelSpec.colour(PixelFormat.RGBA_FLOAT, PROFILE_A))
         with self.assertRaises(InvalidGraph):
             policy.validate_payload(bytes(47), 2, 3, colour_spec())
+
+    def test_sparse_mask_tree_covers_exact_256_pixel_tiles(self) -> None:
+        extent = Rect(0, 0, 300, 300)
+        rectangles = mask_tile_rectangles(extent)
+        self.assertEqual(
+            rectangles,
+            (
+                Rect(0, 0, 256, 256),
+                Rect(256, 0, 44, 256),
+                Rect(0, 256, 256, 44),
+                Rect(256, 256, 44, 44),
+            ),
+        )
+        index = mask_digest_index(bytes(90_000), extent)
+        self.assertEqual(len(index), 4)
+        changed = (dataclasses.replace(index[0], digest=ObjectId("f" * 64)), *index[1:])
+        self.assertNotEqual(
+            mask_manifest_digest(extent, index),
+            mask_manifest_digest(extent, changed),
+        )
 
 
 class GraphContractTests(unittest.TestCase):
@@ -416,6 +441,59 @@ class FakeEngineTests(unittest.TestCase):
                 revision=REVISION,
                 cancel=self.cancel,
             )
+
+    def test_fake_mask_edits_are_immutable_digest_bound_sparse_tiles(self) -> None:
+        update = MaskTileUpdate(
+            Rect(0, 0, 2, 2),
+            ObjectId.from_bytes(self.mask_payload),
+            bytes((255, 170, 85, 0)),
+        )
+        revised = self.engine.edit_mask(
+            self.mask_buffer,
+            (update,),
+            new_revision=STALE_REVISION,
+            cancel=self.cancel,
+        )
+        self.assertEqual(revised.revision, STALE_REVISION)
+        self.assertNotEqual(revised.content_digest, self.mask_buffer.content_digest)
+        self.assertEqual(self.mask_buffer.revision, REVISION)
+        with self.assertRaises(CancelledOrStaleWork):
+            self.engine.edit_mask(
+                revised,
+                (
+                    MaskTileUpdate(
+                        Rect(0, 0, 2, 2),
+                        update.before_digest,
+                        bytes((1, 2, 3, 4)),
+                    ),
+                ),
+                new_revision=RevisionId("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+                cancel=self.cancel,
+            )
+
+    def test_two_hundred_sparse_mask_edits_preserve_every_prior_buffer(self) -> None:
+        current = self.mask_buffer
+        before_payload = self.mask_payload
+        prior = []
+        for index in range(200):
+            after_payload = bytes((index + 1,)) * 4
+            prior.append(current)
+            current = self.engine.edit_mask(
+                current,
+                (
+                    MaskTileUpdate(
+                        Rect(0, 0, 2, 2),
+                        ObjectId.from_bytes(before_payload),
+                        after_payload,
+                    ),
+                ),
+                new_revision=RevisionId(str(uuid.UUID(int=10_000 + index))),
+                cancel=self.cancel,
+            )
+            before_payload = after_payload
+        self.assertEqual(len(prior), 200)
+        self.assertEqual(len({item.token for item in prior}), 200)
+        self.assertNotEqual(current.content_digest, prior[-1].content_digest)
 
     def test_compile_binds_source_digest_revision_extent_and_spec(self) -> None:
         source = self.graph.nodes[0]

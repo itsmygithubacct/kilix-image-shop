@@ -139,6 +139,9 @@ class MaskSemantics(StrEnum):
     FOREGROUND_ALPHA = "foreground-alpha"
 
 
+MASK_TILE_SIZE = 256
+
+
 @dataclass(frozen=True, slots=True)
 class PixelSpec:
     """An explicit pixel boundary: format, alpha, profile and mask meaning."""
@@ -220,6 +223,119 @@ class BufferRef:
             "revision": self.revision.value,
             "contentSha256": self.content_digest.value,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class MaskTileDigest:
+    rectangle: Rect
+    digest: ObjectId
+
+    def __post_init__(self) -> None:
+        _require_type(self.rectangle, Rect, "mask tile rectangle")
+        _require_type(self.digest, ObjectId, "mask tile digest")
+
+    def to_data(self) -> dict[str, object]:
+        return {
+            "rectangle": self.rectangle.to_data(),
+            "sha256": self.digest.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MaskTileUpdate:
+    rectangle: Rect
+    before_digest: ObjectId
+    payload: bytes
+
+    def __post_init__(self) -> None:
+        _require_type(self.rectangle, Rect, "mask update rectangle")
+        _require_type(self.before_digest, ObjectId, "mask update before digest")
+        if not isinstance(self.payload, bytes) or len(self.payload) != (
+            self.rectangle.width * self.rectangle.height
+        ):
+            raise InvalidGraph("mask update payload differs from its Y u8 rectangle")
+
+    @property
+    def after_digest(self) -> ObjectId:
+        return ObjectId.from_bytes(self.payload)
+
+
+def mask_tile_rectangles(extent: Rect) -> tuple[Rect, ...]:
+    _require_type(extent, Rect, "mask extent")
+    rectangles: list[Rect] = []
+    bottom = extent.y + extent.height
+    right = extent.x + extent.width
+    for y in range(extent.y, bottom, MASK_TILE_SIZE):
+        height = min(MASK_TILE_SIZE, bottom - y)
+        for x in range(extent.x, right, MASK_TILE_SIZE):
+            width = min(MASK_TILE_SIZE, right - x)
+            rectangles.append(Rect(x, y, width, height))
+    return tuple(rectangles)
+
+
+def _extract_rectangle(payload: bytes, extent: Rect, rectangle: Rect) -> bytes:
+    if not rectangle.is_within(extent):
+        raise InvalidGraph("mask tile leaves its buffer extent")
+    rows: list[bytes] = []
+    offset_x = rectangle.x - extent.x
+    for y in range(rectangle.y - extent.y, rectangle.y - extent.y + rectangle.height):
+        start = y * extent.width + offset_x
+        rows.append(payload[start : start + rectangle.width])
+    return b"".join(rows)
+
+
+def _replace_rectangle(
+    payload: bytearray,
+    extent: Rect,
+    rectangle: Rect,
+    replacement: bytes,
+) -> None:
+    offset_x = rectangle.x - extent.x
+    replacement_offset = 0
+    for y in range(rectangle.y - extent.y, rectangle.y - extent.y + rectangle.height):
+        start = y * extent.width + offset_x
+        end = start + rectangle.width
+        payload[start:end] = replacement[
+            replacement_offset : replacement_offset + rectangle.width
+        ]
+        replacement_offset += rectangle.width
+
+
+def mask_digest_index(payload: bytes, extent: Rect) -> tuple[MaskTileDigest, ...]:
+    _require_type(extent, Rect, "mask extent")
+    if not isinstance(payload, bytes) or len(payload) != extent.width * extent.height:
+        raise InvalidGraph("mask payload differs from its complete Y u8 extent")
+    return tuple(
+        MaskTileDigest(
+            rectangle,
+            ObjectId.from_bytes(_extract_rectangle(payload, extent, rectangle)),
+        )
+        for rectangle in mask_tile_rectangles(extent)
+    )
+
+
+def mask_manifest_digest(
+    extent: Rect,
+    tiles: tuple[MaskTileDigest, ...],
+) -> ObjectId:
+    _require_type(extent, Rect, "mask extent")
+    if not isinstance(tiles, tuple) or any(
+        not isinstance(item, MaskTileDigest) for item in tiles
+    ):
+        raise InvalidGraph("mask digest index must be an immutable typed tuple")
+    expected = mask_tile_rectangles(extent)
+    if tuple(item.rectangle for item in tiles) != expected:
+        raise InvalidGraph("mask digest index does not cover the exact sparse tile grid")
+    value = {
+        "schema": "kilix.imageshop.mask-tile-tree/v1",
+        "extent": extent.to_data(),
+        "tileSize": MASK_TILE_SIZE,
+        "tiles": [item.to_data() for item in tiles],
+    }
+    carrier = (
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    return ObjectId.from_bytes(carrier)
 
 
 class GraphNodeKind(StrEnum):
@@ -736,6 +852,15 @@ class ImageEngine(Protocol):
         cancel: CancelToken,
     ) -> BufferRef: ...
 
+    def edit_mask(
+        self,
+        buffer: BufferRef,
+        updates: tuple[MaskTileUpdate, ...],
+        *,
+        new_revision: RevisionId,
+        cancel: CancelToken,
+    ) -> BufferRef: ...
+
     def compile_graph(self, graph: GraphSpec, *, cancel: CancelToken) -> ObjectId: ...
 
     def render_tile(self, request: TileRequest, *, cancel: CancelToken) -> TileResult: ...
@@ -777,6 +902,8 @@ class FakeImageEngine:
         self._started = False
         self._closed = False
         self._buffers: dict[str, BufferRef] = {}
+        self._buffer_payloads: dict[str, bytes] = {}
+        self._mask_indexes: dict[str, tuple[MaskTileDigest, ...]] = {}
         self._graphs: dict[ObjectId, GraphSpec] = {}
         self._profiles: set[ObjectId] = set()
         self._proxy_results: dict[
@@ -829,7 +956,12 @@ class FakeImageEngine:
         expected = extent.width * extent.height * spec.pixel_format.bytes_per_pixel
         if len(payload) != expected:
             raise DecodeRefusal("decoded byte length does not match extent and format")
-        digest = ObjectId.from_bytes(payload)
+        mask_index: tuple[MaskTileDigest, ...] | None = None
+        if spec == PixelSpec.foreground_mask():
+            mask_index = mask_digest_index(payload, extent)
+            digest = mask_manifest_digest(extent, mask_index)
+        else:
+            digest = ObjectId.from_bytes(payload)
         descriptor = json.dumps(
             {
                 "content": digest.value,
@@ -842,8 +974,84 @@ class FakeImageEngine:
         ).encode("utf-8")
         token = f"fake:{hashlib.sha256(descriptor).hexdigest()}"
         result = BufferRef(token, extent, spec, revision, digest)
-        self._buffers[token] = result
         cancel.raise_if_cancelled()
+        self._buffers[token] = result
+        self._buffer_payloads[token] = payload
+        if mask_index is not None:
+            self._mask_indexes[token] = mask_index
+        return result
+
+    def edit_mask(
+        self,
+        buffer: BufferRef,
+        updates: tuple[MaskTileUpdate, ...],
+        *,
+        new_revision: RevisionId,
+        cancel: CancelToken,
+    ) -> BufferRef:
+        self._require_started()
+        cancel.raise_if_cancelled()
+        if not isinstance(buffer, BufferRef) or self._buffers.get(buffer.token) != buffer:
+            raise InvalidGraph("mask edit requires one live opaque buffer reference")
+        if buffer.spec != PixelSpec.foreground_mask():
+            raise InvalidGraph("mask edit requires a Y u8 foreground-alpha buffer")
+        _require_type(new_revision, RevisionId, "mask edit revision")
+        if new_revision == buffer.revision:
+            raise InvalidGraph("mask edit must advance the buffer revision")
+        if not isinstance(updates, tuple) or not updates or any(
+            not isinstance(item, MaskTileUpdate) for item in updates
+        ):
+            raise InvalidGraph("mask edit requires immutable typed tile updates")
+        keys = tuple(
+            (item.rectangle.y, item.rectangle.x) for item in updates
+        )
+        if keys != tuple(sorted(set(keys))):
+            raise InvalidGraph("mask updates must be sorted and unique")
+        current_index = self._mask_indexes[buffer.token]
+        current = {item.rectangle: item.digest for item in current_index}
+        for update in updates:
+            if update.rectangle not in current:
+                raise InvalidGraph("mask update is not one exact sparse tile")
+            if current[update.rectangle] != update.before_digest:
+                raise CancelledOrStaleWork("mask tile before-digest is stale")
+            if update.after_digest == update.before_digest:
+                raise InvalidGraph("mask update cannot be a no-op")
+        revised = dict(current)
+        for update in updates:
+            revised[update.rectangle] = update.after_digest
+        revised_index = tuple(
+            MaskTileDigest(item.rectangle, revised[item.rectangle])
+            for item in current_index
+        )
+        content_digest = mask_manifest_digest(buffer.extent, revised_index)
+        descriptor = json.dumps(
+            {
+                "base": buffer.content_digest.value,
+                "content": content_digest.value,
+                "revision": new_revision.value,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        token = f"fake:{hashlib.sha256(descriptor).hexdigest()}"
+        existing = self._buffers.get(token)
+        if existing is not None:
+            return existing
+        payload = bytearray(self._buffer_payloads[buffer.token])
+        for update in updates:
+            cancel.raise_if_cancelled()
+            _replace_rectangle(payload, buffer.extent, update.rectangle, update.payload)
+        result = BufferRef(
+            token,
+            buffer.extent,
+            buffer.spec,
+            new_revision,
+            content_digest,
+        )
+        cancel.raise_if_cancelled()
+        self._buffers[token] = result
+        self._buffer_payloads[token] = bytes(payload)
+        self._mask_indexes[token] = revised_index
         return result
 
     def register_profile(
@@ -1065,6 +1273,8 @@ class FakeImageEngine:
     def close(self) -> None:
         self._bind_or_check_owner()
         self._buffers.clear()
+        self._buffer_payloads.clear()
+        self._mask_indexes.clear()
         self._graphs.clear()
         self._profiles.clear()
         self._proxy_results.clear()
@@ -1094,6 +1304,9 @@ __all__ = (
     "InvalidGraph",
     "MaskParameters",
     "MaskSemantics",
+    "MASK_TILE_SIZE",
+    "MaskTileDigest",
+    "MaskTileUpdate",
     "OpacityBlendParameters",
     "OrderedGroupParameters",
     "PixelFormat",
@@ -1105,4 +1318,7 @@ __all__ = (
     "TileResult",
     "UnavailableGroup",
     "UnsupportedOperation",
+    "mask_digest_index",
+    "mask_manifest_digest",
+    "mask_tile_rectangles",
 )

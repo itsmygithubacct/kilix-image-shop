@@ -20,3 +20,6 @@
 - Add OD-7 integration slice 5/7: integer-only bounded tile partitioning,
   interactive-first queue ordering, cancellation/stale-revision publication
   gates, and one completing native blit per tile.
+- Add OD-7 integration slice 6/7: canonical sparse mask-tile identities,
+  before-digest-bound copy-on-write Y-u8 edits, and an all-or-nothing bounded
+  full-resolution tile worker.

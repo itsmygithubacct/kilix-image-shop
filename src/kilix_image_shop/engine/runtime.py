@@ -44,6 +44,8 @@ from .api import (
     IncompatibleRuntime,
     InternalEngineFailure,
     InvalidGraph,
+    MaskTileDigest,
+    MaskTileUpdate,
     MaskParameters,
     OpacityBlendParameters,
     OrderedGroupParameters,
@@ -55,7 +57,8 @@ from .api import (
     TileRequest,
     TileResult,
     UnavailableGroup,
-    UnsupportedOperation,
+    mask_digest_index,
+    mask_manifest_digest,
 )
 from .compatibility import (
     GI_ORIGIN,
@@ -143,6 +146,16 @@ class NativeRuntimeBackend(Protocol):
         crop_definition: OperationDefinition,
         scale_definition: OperationDefinition,
     ) -> bytes: ...
+
+    def duplicate_buffer(self, buffer: object) -> object: ...
+
+    def write_buffer(
+        self,
+        buffer: object,
+        rectangle: Rect,
+        encoding: str,
+        payload: bytes,
+    ) -> None: ...
 
     def release_buffer(self, buffer: object) -> None: ...
 
@@ -1099,6 +1112,24 @@ class _PyGiBackend:
         buffer.set(rectangle, encoding, payload)
         return buffer
 
+    def duplicate_buffer(self, buffer: object) -> object:
+        return buffer.dup()
+
+    def write_buffer(
+        self,
+        buffer: object,
+        rectangle: Rect,
+        encoding: str,
+        payload: bytes,
+    ) -> None:
+        native_rectangle = self._gegl.Rectangle.new(
+            rectangle.x,
+            rectangle.y,
+            rectangle.width,
+            rectangle.height,
+        )
+        buffer.set(native_rectangle, encoding, payload)
+
     def compile_plan(
         self,
         plan: CompiledGraphPlan,
@@ -1768,6 +1799,7 @@ class Od7ImageEngine:
         self._capabilities: EngineCapabilities | None = None
         self._profiles: dict[ObjectId, pathlib.Path] = {}
         self._buffers: dict[str, tuple[BufferRef, object]] = {}
+        self._mask_indexes: dict[str, tuple[MaskTileDigest, ...]] = {}
         self._graphs: dict[ObjectId, object] = {}
         self._plans: dict[ObjectId, CompiledGraphPlan] = {}
         self._graph_specs: dict[ObjectId, GraphSpec] = {}
@@ -1839,7 +1871,12 @@ class Od7ImageEngine:
         if spec.profile_digest is not None and spec.profile_digest not in self._profiles:
             raise DecodeRefusal("decoded pixel profile is not registered")
         self._policy.validate_payload(payload, extent.width, extent.height, spec)
-        digest = ObjectId.from_bytes(payload)
+        mask_index: tuple[MaskTileDigest, ...] | None = None
+        if spec == PixelSpec.foreground_mask():
+            mask_index = mask_digest_index(payload, extent)
+            digest = mask_manifest_digest(extent, mask_index)
+        else:
+            digest = ObjectId.from_bytes(payload)
         descriptor = json.dumps(
             {
                 "content": digest.value,
@@ -1875,7 +1912,100 @@ class Od7ImageEngine:
             ) from exc
         reference = BufferRef(token, extent, spec, revision, digest)
         self._buffers[token] = (reference, native)
+        if mask_index is not None:
+            self._mask_indexes[token] = mask_index
         return reference
+
+    def edit_mask(
+        self,
+        buffer: BufferRef,
+        updates: tuple[MaskTileUpdate, ...],
+        *,
+        new_revision: RevisionId,
+        cancel: CancelToken,
+    ) -> BufferRef:
+        backend, _ = self._state()
+        cancel.raise_if_cancelled()
+        if not isinstance(buffer, BufferRef) or buffer.token not in self._buffers:
+            raise InvalidGraph("mask edit requires one live opaque buffer reference")
+        if self._buffers[buffer.token][0] != buffer:
+            raise InvalidGraph("mask edit buffer identity differs from the live reference")
+        if buffer.spec != PixelSpec.foreground_mask():
+            raise InvalidGraph("mask edit requires a Y u8 foreground-alpha buffer")
+        if not isinstance(new_revision, RevisionId) or new_revision == buffer.revision:
+            raise InvalidGraph("mask edit must advance the typed buffer revision")
+        if not isinstance(updates, tuple) or not updates or any(
+            not isinstance(item, MaskTileUpdate) for item in updates
+        ):
+            raise InvalidGraph("mask edit requires immutable typed tile updates")
+        keys = tuple((item.rectangle.y, item.rectangle.x) for item in updates)
+        if keys != tuple(sorted(set(keys))):
+            raise InvalidGraph("mask updates must be sorted and unique")
+        current_index = self._mask_indexes[buffer.token]
+        current = {item.rectangle: item.digest for item in current_index}
+        for update in updates:
+            if update.rectangle not in current:
+                raise InvalidGraph("mask update is not one exact sparse tile")
+            if current[update.rectangle] != update.before_digest:
+                raise CancelledOrStaleWork("mask tile before-digest is stale")
+            if update.after_digest == update.before_digest:
+                raise InvalidGraph("mask update cannot be a no-op")
+        revised = dict(current)
+        for update in updates:
+            revised[update.rectangle] = update.after_digest
+        revised_index = tuple(
+            MaskTileDigest(item.rectangle, revised[item.rectangle])
+            for item in current_index
+        )
+        content_digest = mask_manifest_digest(buffer.extent, revised_index)
+        descriptor = json.dumps(
+            {
+                "base": buffer.content_digest.value,
+                "content": content_digest.value,
+                "revision": new_revision.value,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        token = f"od7:{hashlib.sha256(descriptor).hexdigest()}"
+        existing = self._buffers.get(token)
+        if existing is not None:
+            return existing[0]
+        native: object | None = None
+        try:
+            native = backend.duplicate_buffer(self._buffers[buffer.token][1])
+            cancel.raise_if_cancelled()
+            for update in updates:
+                cancel.raise_if_cancelled()
+                backend.write_buffer(
+                    native,
+                    update.rectangle,
+                    self._policy.native_encoding(buffer.spec),
+                    update.payload,
+                )
+                cancel.raise_if_cancelled()
+        except Exception as exc:
+            if native is not None:
+                try:
+                    backend.release_buffer(native)
+                except Exception:
+                    pass
+            if isinstance(exc, EngineFailure):
+                raise
+            raise InternalEngineFailure(
+                "sparse native mask edit failed",
+                diagnostic_ref="engine.mask-edit",
+            ) from exc
+        result = BufferRef(
+            token,
+            buffer.extent,
+            buffer.spec,
+            new_revision,
+            content_digest,
+        )
+        self._buffers[token] = (result, native)
+        self._mask_indexes[token] = revised_index
+        return result
 
     def compile_graph(self, graph: GraphSpec, *, cancel: CancelToken) -> ObjectId:
         backend, _ = self._state()
@@ -2102,7 +2232,40 @@ class Od7ImageEngine:
     ) -> tuple[TileResult, ...]:
         self._state()
         cancel.raise_if_cancelled()
-        raise UnsupportedOperation("native export enters integration slice 6/7")
+        if not isinstance(requests, tuple) or not requests or any(
+            not isinstance(item, TileRequest) for item in requests
+        ):
+            raise InvalidGraph("export requires non-empty immutable tile requests")
+        if any(item.level != 0 for item in requests):
+            raise InvalidGraph("full-resolution export must use level 0")
+        identity = (
+            requests[0].graph_digest,
+            requests[0].spec,
+            requests[0].revision,
+        )
+        if any(
+            (item.graph_digest, item.spec, item.revision) != identity
+            for item in requests
+        ):
+            raise InvalidGraph("export tiles do not share one immutable render identity")
+        destinations = tuple(
+            (
+                item.destination.y,
+                item.destination.x,
+                item.destination.height,
+                item.destination.width,
+            )
+            for item in requests
+        )
+        if destinations != tuple(sorted(set(destinations))):
+            raise InvalidGraph("export tile destinations must be sorted and unique")
+        completed: list[TileResult] = []
+        for request in requests:
+            cancel.raise_if_cancelled()
+            completed.append(self.render_tile(request, cancel=cancel))
+            cancel.raise_if_cancelled()
+        cancel.raise_if_cancelled()
+        return tuple(completed)
 
     def close(self) -> None:
         backend, _ = self._state()
@@ -2135,6 +2298,7 @@ class Od7ImageEngine:
             finally:
                 del native
         gc.collect()
+        self._mask_indexes.clear()
         self._proxy_results.clear()
         self._plans.clear()
         self._graph_specs.clear()

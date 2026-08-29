@@ -25,7 +25,7 @@ from kilix_image_shop.domain.color import (
     EngineCompatibility,
 )
 from kilix_image_shop.domain.geometry import Rect
-from kilix_image_shop.domain.identifiers import ObjectId
+from kilix_image_shop.domain.identifiers import ObjectId, RevisionId
 from kilix_image_shop.domain.layers import Adjustment, AdjustmentId, Parameter
 from kilix_image_shop.engine.api import (
     AdjustmentParameters,
@@ -35,6 +35,7 @@ from kilix_image_shop.engine.api import (
     GraphNodeKind,
     ImageEngine,
     InvalidGraph,
+    MaskTileUpdate,
     PixelFormat,
     PixelSpec,
     TileRequest,
@@ -98,10 +99,13 @@ class CompilerBackend:
         self.proxy_builds: list[tuple[int, Rect, str, object, object]] = []
         self.proxy_reads: list[tuple[object, Rect, str]] = []
         self.tile_renders: list[tuple[object, Rect, Rect, str]] = []
+        self.mask_duplicates: list[tuple[object, object]] = []
+        self.mask_writes: list[tuple[object, Rect, str, bytes]] = []
         self.cancel_on_import: CancelToken | None = None
         self.cancel_on_compile: CancelToken | None = None
         self.cancel_on_proxy_build: CancelToken | None = None
         self.cancel_on_render: CancelToken | None = None
+        self.cancel_on_mask_write: CancelToken | None = None
         self.shutdown_count = 0
 
     def initialize(self) -> None:
@@ -193,6 +197,22 @@ class CompilerBackend:
             * destination_rectangle.height
             * bytes_per_pixel
         )
+
+    def duplicate_buffer(self, buffer: object) -> object:
+        duplicate = object()
+        self.mask_duplicates.append((buffer, duplicate))
+        return duplicate
+
+    def write_buffer(
+        self,
+        buffer: object,
+        rectangle: Rect,
+        encoding: str,
+        payload: bytes,
+    ) -> None:
+        self.mask_writes.append((buffer, rectangle, encoding, payload))
+        if self.cancel_on_mask_write is not None:
+            self.cancel_on_mask_write.cancel()
 
     def release_buffer(self, buffer: object) -> None:
         self.lifecycle.append("buffer-release")
@@ -384,6 +404,50 @@ class BufferAndProfileTests(CompilerFixture):
         self.assertEqual(len(self.backend.released_buffers), 1)
         self.assertEqual(len(self.engine._buffers), 0)
 
+    def test_sparse_mask_edit_duplicates_and_writes_only_the_changed_tile(self) -> None:
+        self.register_profiles()
+        _, mask = self.import_graph_sources()
+        revised = self.engine.edit_mask(
+            mask,
+            (
+                MaskTileUpdate(
+                    Rect(0, 0, 2, 2),
+                    ObjectId.from_bytes(bytes((0, 85, 170, 255))),
+                    bytes((255, 170, 85, 0)),
+                ),
+            ),
+            new_revision=RevisionId("44444444-4444-4444-8444-444444444444"),
+            cancel=self.cancel,
+        )
+        self.assertNotEqual(revised.content_digest, mask.content_digest)
+        self.assertEqual(len(self.backend.mask_duplicates), 1)
+        self.assertEqual(len(self.backend.mask_writes), 1)
+        self.assertEqual(self.backend.mask_writes[0][1], Rect(0, 0, 2, 2))
+        self.assertEqual(self.backend.mask_writes[0][2], "Y u8")
+
+    def test_cancelled_mask_write_releases_duplicate_and_publishes_zero_buffers(self) -> None:
+        self.register_profiles()
+        _, mask = self.import_graph_sources()
+        token = CancelToken()
+        self.backend.cancel_on_mask_write = token
+        before_buffers = len(self.engine._buffers)
+        before_releases = len(self.backend.released_buffers)
+        with self.assertRaises(CancelledOrStaleWork):
+            self.engine.edit_mask(
+                mask,
+                (
+                    MaskTileUpdate(
+                        Rect(0, 0, 2, 2),
+                        ObjectId.from_bytes(bytes((0, 85, 170, 255))),
+                        bytes((255, 255, 255, 255)),
+                    ),
+                ),
+                new_revision=RevisionId("55555555-5555-4555-8555-555555555555"),
+                cancel=token,
+            )
+        self.assertEqual(len(self.engine._buffers), before_buffers)
+        self.assertEqual(len(self.backend.released_buffers), before_releases + 1)
+
 
 class ClosedCompilerTests(CompilerFixture):
     def test_all_nine_graph_families_expand_to_a_closed_native_plan(self) -> None:
@@ -507,8 +571,9 @@ class ClosedCompilerTests(CompilerFixture):
         tile = self.engine.render_tile(level_zero, cancel=self.cancel)
         self.assertEqual(len(tile.owned_bytes or b""), 8)
         self.assertEqual(len(self.backend.tile_renders), 1)
-        with self.assertRaises(UnsupportedOperation):
-            self.engine.export_tiles((level_zero,), cancel=self.cancel)
+        exported = self.engine.export_tiles((level_zero,), cancel=self.cancel)
+        self.assertEqual(len(exported), 1)
+        self.assertEqual(exported[0].destination, level_zero.destination)
         self.assertIsInstance(self.engine, ImageEngine)
 
     def test_cancelled_native_tile_call_publishes_zero_results(self) -> None:
@@ -525,6 +590,25 @@ class ClosedCompilerTests(CompilerFixture):
         )
         with self.assertRaises(CancelledOrStaleWork):
             self.engine.render_tile(request, cancel=token)
+        self.assertEqual(len(self.backend.tile_renders), 1)
+
+    def test_cancelled_full_resolution_batch_returns_zero_tile_tuples(self) -> None:
+        graph, digest, _ = self.compile_full_graph()
+        requests = tuple(
+            TileRequest(
+                digest,
+                Rect(x, 0, 1, 2),
+                Rect(x, 0, 1, 2),
+                0,
+                graph.output_spec,
+                graph.revision,
+            )
+            for x in range(2)
+        )
+        token = CancelToken()
+        self.backend.cancel_on_render = token
+        with self.assertRaises(CancelledOrStaleWork):
+            self.engine.export_tiles(requests, cancel=token)
         self.assertEqual(len(self.backend.tile_renders), 1)
 
     def test_cancelled_native_proxy_build_releases_buffer_and_publishes_zero_results(
