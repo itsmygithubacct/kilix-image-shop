@@ -55,10 +55,12 @@ The frozen review population is 14/14 suites:
 | 13/14 path, symlink, budget, privacy, and logs | `test_store.py`, `test_history.py`, `test_export.py`, `test_qualification_harness.py` | PENDING, 0/1 |
 | 14/14 installed H0 conventional and 100 MP campaign | owner-supplied qualification packet | BLOCKED, 0/1; release owner and Track C |
 
-The reviewer also checks the 16/16 architecture invariants, the exact 40/40
-functional-module list asserted by `test_application.py`, the 7/7 OD-7 slices,
-and the 0/2 production-provider population. Synthetic fakes may support a code
-verdict but receive 0/1 installed-H0 evidence credit.
+The reviewer also checks the 16/16 architecture invariants committed in
+`ARCHITECTURE-INVARIANTS.md` (each row names its enforcing module and
+acceptance suite), the exact 40/40 functional-module list asserted by
+`test_application.py`, the 7/7 OD-7 slices, and the 0/2 production-provider
+population. Synthetic fakes may support a code verdict but receive 0/1
+installed-H0 evidence credit.
 
 ## Required independent disposition
 
