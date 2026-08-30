@@ -405,7 +405,7 @@ class ApplicationTests(unittest.TestCase):
 
 
 class ApplicationDependencyTests(unittest.TestCase):
-    def test_frozen_functional_module_population_is_exactly_forty(self) -> None:
+    def test_frozen_functional_module_population_is_exactly_forty_five(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1] / "src" / "kilix_image_shop"
         actual = {
             path.relative_to(root).as_posix()
@@ -453,9 +453,14 @@ class ApplicationDependencyTests(unittest.TestCase):
             "ops/state.py",
             "ops/orchestrator.py",
             "ops/diagnostics.py",
+            "cli/configuration.py",
+            "cli/presentation.py",
+            "cli/environment.py",
+            "cli/commands.py",
+            "cli/main.py",
         }
         self.assertEqual(actual, expected)
-        self.assertEqual(len(actual), 40)
+        self.assertEqual(len(actual), 45)
 
     def test_application_and_ports_import_zero_adapter_families(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1] / "src" / "kilix_image_shop"

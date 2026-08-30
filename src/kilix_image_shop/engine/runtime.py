@@ -952,13 +952,15 @@ def _validate_environment() -> None:
         raise IncompatibleRuntime("GEGL or babl was imported before the runtime guard")
 
 
-def _read_dpkg_versions() -> dict[str, str]:
-    status_path = pathlib.Path("/var/lib/dpkg/status")
-    try:
-        data = status_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise UnavailableGroup("Debian package identity database is unavailable") from exc
-    wanted = {"libgegl-0.4-0t64", "libbabl-0.1-0", "python3-gi"}
+OD7_PACKAGE_NAMES: tuple[str, ...] = (
+    "libbabl-0.1-0",
+    "libgegl-0.4-0t64",
+    "python3-gi",
+)
+DPKG_STATUS_PATH = pathlib.Path("/var/lib/dpkg/status")
+
+
+def _parse_dpkg_status(data: str, wanted: frozenset[str]) -> dict[str, str]:
     versions: dict[str, str] = {}
     for paragraph in data.split("\n\n"):
         fields: dict[str, str] = {}
@@ -973,6 +975,35 @@ def _read_dpkg_versions() -> dict[str, str]:
             version = fields.get("Version")
             if version:
                 versions[package] = version
+    return versions
+
+
+def observe_installed_group(
+    status_path: pathlib.Path = DPKG_STATUS_PATH,
+) -> dict[str, str]:
+    """Report installed OD-7 versions without refusing an incomplete group.
+
+    Startup still refuses anything short of the complete group. This reader
+    exists so a diagnostic surface can name which of the 3/3 packages is absent
+    instead of reporting one undifferentiated failure.
+    """
+
+    if not isinstance(status_path, pathlib.Path):
+        raise IncompatibleRuntime("package status path must be typed")
+    try:
+        data = status_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    return _parse_dpkg_status(data, frozenset(OD7_PACKAGE_NAMES))
+
+
+def _read_dpkg_versions() -> dict[str, str]:
+    try:
+        data = DPKG_STATUS_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise UnavailableGroup("Debian package identity database is unavailable") from exc
+    wanted = frozenset(OD7_PACKAGE_NAMES)
+    versions = _parse_dpkg_status(data, wanted)
     if set(versions) != wanted:
         raise UnavailableGroup("the complete OD-7 package identity is unavailable")
     return versions
@@ -2433,8 +2464,10 @@ __all__ = (
     "BufferBinding",
     "CompiledGraphPlan",
     "CompiledPlanNode",
+    "DPKG_STATUS_PATH",
     "ImageRuntime",
     "NativeRuntimeBackend",
+    "OD7_PACKAGE_NAMES",
     "Od7ImageEngine",
     "PlanInput",
     "ProfileBinding",
@@ -2442,4 +2475,5 @@ __all__ = (
     "RuntimeProcessGuard",
     "STARTUP_SEQUENCE",
     "StartupStep",
+    "observe_installed_group",
 )

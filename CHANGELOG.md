@@ -21,7 +21,14 @@
 - Add the 4/4-module zero-provider operation substrate with 2/2 admitted
   operation kinds, linearizable cancellation, provider/result joins, and fixed
   local diagnostics.
-- Add the 2/2 application boundary modules and freeze the total functional
-  implementation population at 40/40 modules.
+- Add the 2/2 application boundary modules.
+- Add the 5/5-module toolkit-free command surface and its 1/1 console script:
+  identity, component readiness, project inspection, closure verification,
+  generation listing, previewed recovery and collection, the operation registry
+  and diagnostic catalogue, deterministic preset binding, and sidecar
+  verification, with a 5/5 closed exit-status set and canonical JSON output.
+- Move the frozen total functional implementation population from 40/40 to
+  45/45 modules and the acceptance-suite map from 14/14 to 15/15.
 - Retain 0/2 production provider adapters and 0/1 GUI toolkit selections until
-  their separately owned gates open.
+  their separately owned gates open. The command surface renders 0/1 pixels and
+  offers 0/1 editing verbs; both wait on gates recorded in `QUALIFICATION.md`.

@@ -15,6 +15,9 @@ authors = [
 ]
 dependencies = []
 
+[project.scripts]
+kilix-image-shop = "kilix_image_shop.cli.main:main"
+
 [dependency-groups]
 build = ["hatchling==1.27.0"]
 
