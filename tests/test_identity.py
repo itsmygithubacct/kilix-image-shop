@@ -95,11 +95,19 @@ class IdentityTests(unittest.TestCase):
         notice = (ROOT / "NOTICE").read_text()
         self.assertIn("Copyright 2026 itsmygithubacct", notice)
 
-    def test_local_only_publication_boundary(self) -> None:
+    def test_publication_boundary_is_private_work_refs_only(self) -> None:
         publication = (ROOT / "PUBLICATION.md").read_text().lower()
-        self.assertIn("local-only", publication)
-        for action in ("remote", "push", "tag", "package publication", "release-pin"):
-            self.assertIn(action, publication)
+        for authorized in ("private", "work/*", "archive/*"):
+            self.assertIn(authorized, publication)
+        for reserved in (
+            "pushes to `main`",
+            "release tags",
+            "force-push",
+            "visibility change",
+            "package publication",
+            "release-pin",
+        ):
+            self.assertIn(reserved, publication)
         self.assertEqual(git("remote"), "")
 
     def test_tracked_manifest_retains_the_exact_birth_surface(self) -> None:

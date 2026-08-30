@@ -32,3 +32,7 @@
 - Retain 0/2 production provider adapters and 0/1 GUI toolkit selections until
   their separately owned gates open. The command surface renders 0/1 pixels and
   offers 0/1 editing verbs; both wait on gates recorded in `QUALIFICATION.md`.
+- Record the publication boundary the owner authorized: `work/*` and `archive/*`
+  refs to one private remote, published by explicit URL with 0/0 configured
+  remotes. Pushes to `main`, tags, force-pushes, history rewrites and visibility
+  changes remain refused at 0/5.
