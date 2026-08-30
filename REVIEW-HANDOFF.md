@@ -13,9 +13,24 @@ The reviewer records all 4/4 target fields before review:
 - reviewed tree ID: PENDING, 0/1; and
 - review timestamp in UTC: PENDING, 0/1.
 
-The reviewed worktree must be clean at 0/0 changed paths, remain on branch
-`main`, and have 0/0 configured remotes. Review authorizes 0/5 external actions:
-remote creation, push, tag, package publication, and release-pin movement.
+The reviewed worktree must be clean at 0/0 changed paths and carry only the
+authorized private remote. Review authorizes 0/5 external actions: pushes to
+`main`, tags, force-push or history rewrite, visibility changes, and package or
+release-pin movement.
+
+The published review target is the `work/0.2.1-f115` ref of the **private**
+repository `itsmygithubacct/kilix-image-shop`. A reviewer clones it directly:
+
+~~~sh
+git clone --branch work/0.2.1-f115 \
+  https://github.com/itsmygithubacct/kilix-image-shop.git
+~~~
+
+The complete gate is expected to pass in that clone exactly as it does in the
+builder's working copy; the builder verified this on a fresh clone before
+handing the packet over. A clone legitimately has an `origin`, so the enforced
+invariant is that every configured fetch and push URL is that authorized
+private repository — not that no remote exists.
 
 ## Reproduction
 
