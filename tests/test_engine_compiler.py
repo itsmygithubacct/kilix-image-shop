@@ -33,6 +33,7 @@ from kilix_image_shop.engine.api import (
     CancelledOrStaleWork,
     DecodeRefusal,
     GraphNodeKind,
+    GraphSpec,
     ImageEngine,
     InvalidGraph,
     MaskTileUpdate,
@@ -466,6 +467,27 @@ class ClosedCompilerTests(CompilerFixture):
                 for property_value in node.properties
             )
         )
+
+    def test_bottom_layer_unary_opacity_compiles_without_a_native_blend_node(self) -> None:
+        self.register_profiles()
+        pixel, mask = self.import_graph_sources()
+        graph = full_graph(
+            self.capabilities.compatibility_digest,
+            pixels_digest=pixel.content_digest,
+            mask_digest=mask.content_digest,
+        )
+        unary_blend = dataclasses.replace(graph.nodes[3], inputs=("transform",))
+        unary = GraphSpec(
+            graph.revision,
+            graph.compatibility_digest,
+            (graph.nodes[1], graph.nodes[2], unary_blend, *graph.nodes[4:]),
+            graph.output_node,
+        )
+        digest = self.engine.compile_graph(unary, cancel=self.cancel)
+        plan = self.engine.compiled_plan(digest)
+        plan_ids = tuple(item.plan_id for item in plan.nodes)
+        self.assertIn("blend__opacity", plan_ids)
+        self.assertNotIn("blend__blend", plan_ids)
         self.assertTrue(
             any(
                 isinstance(property_value.value, ProfileBinding)

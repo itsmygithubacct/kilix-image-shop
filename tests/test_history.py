@@ -16,12 +16,33 @@ from kilix_image_shop.history.spill import SpillError, SpillStore
 from kilix_image_shop.history.stack import (
     RESTORE_CONTROLS,
     HistoryError,
+    HistoryRecord,
     HistoryStack,
     RedoUnavailable,
     UndoUnavailable,
+    command_bytes,
 )
 
 from domain_fixtures import layer_id, object_id, sample_document
+
+
+class TogglePutSpillStore(SpillStore):
+    __slots__ = ("fail_put",)
+
+    def put(self, entry_id, payload):
+        if self.fail_put:
+            raise SpillError("synthetic spill publication failure")
+        return super().put(entry_id, payload)
+
+
+class FailSecondPutSpillStore(SpillStore):
+    __slots__ = ("put_calls",)
+
+    def put(self, entry_id, payload):
+        object.__setattr__(self, "put_calls", self.put_calls + 1)
+        if self.put_calls == 2:
+            raise SpillError("synthetic second spill publication failure")
+        return super().put(entry_id, payload)
 
 
 def revision(number: int) -> RevisionId:
@@ -156,6 +177,100 @@ class HistoryRestoreTests(unittest.TestCase):
             self.assertEqual(stack.usage, before_usage)
             self.assertTrue(stack.can_undo)
             self.assertFalse(stack.can_redo)
+
+    def test_failed_spill_publication_restores_entries_cursor_and_redo_carrier(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = SpillStore.create(
+                pathlib.Path(temporary),
+                sample_document().document_id,
+                max_record_bytes=1_000_000,
+            )
+            spill = TogglePutSpillStore(base.root, base.max_record_bytes)
+            object.__setattr__(spill, "fail_put", False)
+            stack = HistoryStack(
+                sample_document(),
+                HistoryBudget(8, 1, 1_000_000),
+                spill,
+            )
+            self.append(stack, 3, "first")
+            stack.undo(
+                expected_revision=revision(3),
+                new_revision=revision(100),
+                object_validator=lambda item: True,
+            )
+            before = stack.current_state
+            before_usage = stack.usage
+            command = command_for(stack, 101, "replacement")
+            result = reduce_command(stack.current_state, command)
+            object.__setattr__(spill, "fail_put", True)
+            with self.assertRaises(SpillError):
+                stack.record(command, result)
+            self.assertIs(stack.current_state, before)
+            self.assertEqual(stack.usage, before_usage)
+            self.assertTrue(stack.can_redo)
+            object.__setattr__(spill, "fail_put", False)
+            restored = stack.redo(
+                expected_revision=revision(100),
+                new_revision=revision(102),
+                object_validator=lambda item: True,
+            )
+            self.assertEqual(restored.state.layer_map[layer_id(1)].name, "first")
+
+    def test_failed_later_spill_removes_newly_created_then_pruned_carrier(self) -> None:
+        initial = sample_document()
+        first_command = SetLayerProperty(
+            expected_revision=initial.revision_id,
+            new_revision=revision(3),
+            layer_id=layer_id(1),
+            name="a",
+        )
+        first_result = reduce_command(initial, first_command)
+        first_record = HistoryRecord(
+            command_bytes(first_command),
+            initial,
+            first_result.state,
+            (),
+            (),
+            first_result.changed_layer_ids,
+        )
+        second_command = SetLayerProperty(
+            expected_revision=first_result.state.revision_id,
+            new_revision=revision(4),
+            layer_id=layer_id(1),
+            name="x" * 100,
+        )
+        second_result = reduce_command(first_result.state, second_command)
+        second_record = HistoryRecord(
+            command_bytes(second_command),
+            first_result.state,
+            second_result.state,
+            (),
+            (),
+            second_result.changed_layer_ids,
+        )
+        self.assertGreater(second_record.resident_bytes, first_record.resident_bytes)
+        spill_limit = max(
+            len(first_record.canonical_bytes()),
+            len(second_record.canonical_bytes()),
+        )
+        budget = HistoryBudget(8, first_record.resident_bytes, spill_limit)
+        with tempfile.TemporaryDirectory() as temporary:
+            base = SpillStore.create(
+                pathlib.Path(temporary),
+                initial.document_id,
+                max_record_bytes=spill_limit,
+            )
+            spill = FailSecondPutSpillStore(base.root, base.max_record_bytes)
+            object.__setattr__(spill, "put_calls", 0)
+            stack = HistoryStack(initial, budget, spill)
+            stack.record(first_command, first_result)
+            before = stack.current_state
+            before_usage = stack.usage
+            with self.assertRaises(SpillError):
+                stack.record(second_command, second_result)
+            self.assertIs(stack.current_state, before)
+            self.assertEqual(stack.usage, before_usage)
+            self.assertEqual(tuple(spill.root.glob("*.json")), ())
 
     def test_missing_or_corrupt_spill_fails_visibly_without_state_change(self) -> None:
         for corruption in ("missing", "digest"):

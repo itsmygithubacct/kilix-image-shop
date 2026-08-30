@@ -113,7 +113,7 @@ class IdentityTests(unittest.TestCase):
             }
         )
 
-    def test_package_root_stays_adapter_free(self) -> None:
+    def test_package_root_contains_only_identity_and_frozen_application_boundaries(self) -> None:
         package_files = {
             path.relative_to(ROOT).as_posix()
             for path in (ROOT / "src" / "kilix_image_shop").iterdir()
@@ -123,6 +123,8 @@ class IdentityTests(unittest.TestCase):
             package_files,
             {
                 "src/kilix_image_shop/__init__.py",
+                "src/kilix_image_shop/application.py",
+                "src/kilix_image_shop/ports.py",
                 "src/kilix_image_shop/py.typed",
             },
         )

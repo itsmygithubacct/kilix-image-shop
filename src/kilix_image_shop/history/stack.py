@@ -316,16 +316,23 @@ class HistoryStack:
             budget=self._budget,
         )
 
-    def _delete_entry(self, entry: Entry) -> None:
+    def _delete_entry(
+        self,
+        entry: Entry,
+        deferred: list[SpillRef] | None = None,
+    ) -> None:
         if isinstance(entry, SpillRef):
-            self._spill.delete(entry)
+            if deferred is None:
+                self._spill.delete(entry)
+            else:
+                deferred.append(entry)
 
-    def _discard_redo(self) -> None:
+    def _discard_redo(self, deferred: list[SpillRef] | None = None) -> None:
         for entry in self._entries[self._cursor :]:
-            self._delete_entry(entry)
+            self._delete_entry(entry, deferred)
         del self._entries[self._cursor :]
 
-    def _prune_oldest(self) -> None:
+    def _prune_oldest(self, deferred: list[SpillRef] | None = None) -> None:
         if not self._entries:
             return
         entry = self._entries.pop(0)
@@ -333,7 +340,7 @@ class HistoryStack:
         if was_undoable:
             self._cursor -= 1
             self._pruned_entries += 1
-        self._delete_entry(entry)
+        self._delete_entry(entry, deferred)
 
     def _resident_bytes(self) -> int:
         return sum(
@@ -345,9 +352,9 @@ class HistoryStack:
     def _spill_bytes(self) -> int:
         return sum(item.byte_count for item in self._entries if isinstance(item, SpillRef))
 
-    def _enforce_budget(self) -> None:
+    def _enforce_budget(self, deferred: list[SpillRef] | None = None) -> None:
         while len(self._entries) > self._budget.max_entries:
-            self._prune_oldest()
+            self._prune_oldest(deferred)
         while self._resident_bytes() > self._budget.max_resident_bytes:
             candidate = next(
                 (
@@ -362,10 +369,10 @@ class HistoryStack:
             index, record = candidate
             payload = record.canonical_bytes()
             if len(payload) > self._budget.max_spill_bytes:
-                self._prune_oldest()
+                self._prune_oldest(deferred)
                 continue
             while self._spill_bytes() + len(payload) > self._budget.max_spill_bytes:
-                self._prune_oldest()
+                self._prune_oldest(deferred)
                 if index == 0:
                     break
                 index -= 1
@@ -405,12 +412,53 @@ class HistoryStack:
             after_objects,
             result.changed_layer_ids,
         )
-        self._discard_redo()
-        self._entries.append(record)
-        self._cursor += 1
-        self._enforce_budget()
+        previous_entries = self._entries
+        previous_cursor = self._cursor
+        previous_pruned = self._pruned_entries
+        previous_spills = {
+            item.entry_id for item in previous_entries if isinstance(item, SpillRef)
+        }
+        deferred: list[SpillRef] = []
+        self._entries = list(previous_entries)
+        try:
+            self._discard_redo(deferred)
+            self._entries.append(record)
+            self._cursor += 1
+            self._enforce_budget(deferred)
+        except Exception:
+            new_spills = tuple(
+                sorted(
+                    {
+                        item.entry_id: item
+                        for item in (*self._entries, *deferred)
+                        if isinstance(item, SpillRef)
+                        and item.entry_id not in previous_spills
+                    }.values(),
+                    key=lambda item: item.entry_id.value,
+                )
+            )
+            self._entries = previous_entries
+            self._cursor = previous_cursor
+            self._pruned_entries = previous_pruned
+            for reference in new_spills:
+                try:
+                    self._spill.delete(reference)
+                except SpillError:
+                    pass
+            raise
         self._state = result.state
         self._used_revisions.add(result.state.revision_id)
+        retained_spills = {
+            item.entry_id for item in self._entries if isinstance(item, SpillRef)
+        }
+        for reference in deferred:
+            if reference.entry_id in retained_spills:
+                continue
+            try:
+                self._spill.delete(reference)
+            except SpillError:
+                # An unreachable spill is safe to retain and can be retired later.
+                pass
         return self.usage
 
     def _materialize(self, entry: Entry) -> HistoryRecord:

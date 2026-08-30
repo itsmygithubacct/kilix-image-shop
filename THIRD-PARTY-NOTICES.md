@@ -29,19 +29,32 @@ source distribution.
 
 Status: `OPEN`. Stable group ID: `plebian.f115.image-engine`. OD-7 selects GEGL
 `1:0.4.62-2+deb13u2` and babl `1:0.1.114-2`. The exact 11/11 direct package
-members are known, but the final target-relative closure, SBOM, complete licence
-ledger, and accepted transaction remain open. No native package is installed by
-this Python project.
+names are selected:
+
+- 5/11 base-shared members: `libjpeg62-turbo`, `libpng16-16t64`, `libtiff6`,
+  `libwebp7`, and `liblcms2-2`; and
+- 6/11 feature-entering members: `libgegl-0.4-0t64`, `libgegl-common`,
+  `libbabl-0.1-0`, `gir1.2-gegl-0.4`, `gir1.2-babl-0.1`, and `python3-gi`.
+
+The observed feature delta also has 12/12 named transitive members:
+`gir1.2-girepository-2.0`, `libamd3`, `libcamd3`, `libccolamd3`, `libcholmod5`,
+`libcolamd3`, `libgirepository-1.0-1`, `libimath-3-1-29t64`,
+`libopenexr-3-1-30`, `libraw23t64`, `libsuitesparseconfig7`, and `libumfpack6`.
+
+Final archive identities are accepted at 0/11, and the complete target-relative
+closure, SBOM, licence ledger, and lifecycle transaction remain OPEN at 0/4.
+No native package is installed by this Python project.
 
 ## 3. Codec, colour, and font dependencies
 
 Status: `OPEN`. The selected direct operating-system set currently names
 `libjpeg62-turbo`, `libpng16-16t64`, `libtiff6`, `libwebp7`, and `liblcms2-2`
 at 5/5 members. The final resolved codec/colour inventory and the GUI/font
-inventory remain open. No font dependency is selected by this skeleton.
+inventory remain open. No font dependency is selected by this core.
 
 ## 4. Contract and model-operation carriers
 
-Status: `NOT SHIPPED`. This skeleton contains 0/1 contract carriers, 0/1 model
-runtimes, and 0/1 operation adapters. Their exact identities, licences, and
-carried texts enter only in later separately authorized changes.
+Status: `NOT SHIPPED`. This core contains 0/2 external shared/F108 contract
+carriers, 0/2 model runtimes, and 0/2 production operation adapters. Their exact
+identities, licences, and carried texts enter only in later separately
+authorized changes.
