@@ -70,11 +70,16 @@ The 15/15 acceptance-suite rows and review instructions are mapped in
   `kilix-tui-utils` and `kilix-content` streams. This repository changes 0/3 of
   them.
 - Command-surface editing verbs: BLOCKED at 0/1 on the profile-object source.
-  A saved project's object closure excludes the colour-profile objects the
-  application boundary must resolve before it may publish a revision, so no
-  editing verb is offered rather than offering one that cannot open a
-  profile-bearing project. Owned by the F115 owner as a design decision, and
-  recorded rather than worked around.
+  The application boundary resolves and verifies every object a revision
+  references, including the working colour profile and each asset profile. The
+  project object closure deliberately excludes those profile objects, and the
+  accepted package group carries `liblcms2-2` but 0/1 ICC profile carriers, so a
+  store-backed session has no defined source for their bytes. Closing it needs
+  either a project-closure change against the frozen contract, owned by the
+  release root and Track G through the G5b freeze, or an ICC profile carrier
+  added to the frozen group, owned by Track C and the release owner. No editing
+  verb is offered in the meantime, and the gap is recorded rather than worked
+  around.
 - Frozen G5b/provider entry order: BLOCKED at 0/2 entries, owned by the release
   root and Track G.
 - F108 editable-mask provider round trip: BLOCKED at 0/1, owned by F108 and the
