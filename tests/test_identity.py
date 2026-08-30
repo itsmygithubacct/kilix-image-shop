@@ -108,7 +108,17 @@ class IdentityTests(unittest.TestCase):
             "release-pin",
         ):
             self.assertIn(reserved, publication)
-        self.assertEqual(git("remote"), "")
+
+    def test_every_configured_remote_is_the_authorized_private_repository(self) -> None:
+        authorized = {
+            "https://github.com/itsmygithubacct/kilix-image-shop.git",
+            "git@github.com:itsmygithubacct/kilix-image-shop.git",
+        }
+        for remote in git("remote").split():
+            urls = set(git("remote", "get-url", "--all", remote).split())
+            urls.update(git("remote", "get-url", "--push", "--all", remote).split())
+            self.assertTrue(urls, remote)
+            self.assertTrue(urls <= authorized, f"{remote}: {sorted(urls - authorized)}")
 
     def test_tracked_manifest_retains_the_exact_birth_surface(self) -> None:
         tracked = set(git("ls-files").splitlines())

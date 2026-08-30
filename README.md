@@ -105,9 +105,10 @@ Its synthetic unit fixtures receive 0/1 installed-H0 evidence credit.
 
 ## Repository status
 
-The working copy configures 0/0 remotes; publication uses an explicit URL at
-push time. Authorized publication is limited to `work/*` and `archive/*` refs
-on the private remote `itsmygithubacct/kilix-image-shop`. Pushes to `main`,
+The builder's working copy configures 0/0 remotes and publishes by explicit URL;
+a clone's remote must be the authorized private repository, which `make check`
+enforces. Authorized publication is limited to `work/*` and `archive/*` refs on
+the private remote `itsmygithubacct/kilix-image-shop`. Pushes to `main`,
 release tags, force-pushes, history rewrites, visibility changes, package or
 release-artifact publication and release-pin movement remain refused and
 reserved to the owner. See [`PUBLICATION.md`](PUBLICATION.md).

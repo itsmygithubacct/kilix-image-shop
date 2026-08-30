@@ -25,9 +25,14 @@ bytes. A push that lands a `work/*` ref is not an approval of anything else,
 and it is not a release-admission claim: this repository still carries no
 independent acceptance of its own work.
 
-## Working-copy boundary
+## Working-copy and clone boundary
 
-The working copy configures 0/0 remotes on purpose. Publication uses an
-explicit URL at push time, so no ambient remote exists that an unrelated
-command could push to by accident. `make check` enforces the 0/0 configured
-remotes as part of its hygiene phase.
+The builder's working copy configures 0/0 remotes on purpose: publication uses
+an explicit URL at push time, so no ambient remote exists that an unrelated
+command could push to by accident.
+
+A reviewer's clone necessarily has one. The enforced invariant is therefore not
+"no remote" but **every configured fetch and push URL is the authorized private
+repository** — `https://github.com/itsmygithubacct/kilix-image-shop.git` or its
+SSH form. A mirror, a fork or any other host fails the hygiene phase of
+`make check` and the identity suite, in the working copy and in a clone alike.
