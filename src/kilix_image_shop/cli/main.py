@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import sys
-from typing import Callable, Sequence, TextIO
+from typing import Sequence, TextIO
 
+from kilix_image_shop.domain.assets import MediaType
+from kilix_image_shop.domain.color import ColourSpace
+from kilix_image_shop.domain.layers import AdjustmentId, BlendMode
 from kilix_image_shop.store.layout import ProjectLimits, StoreError
 
 from . import commands
@@ -60,8 +63,33 @@ def build_parser() -> argparse.ArgumentParser:
     project = groups.add_parser("project", help="inspect and maintain one project")
     project_verbs = project.add_subparsers(dest="verb")
 
+    create = project_verbs.add_parser(
+        "create",
+        parents=[limits],
+        help="create an empty atomic project from a compatibility carrier",
+    )
+    create.add_argument("root", help="new project root directory")
+    create.add_argument("compatibility", help="canonical engine compatibility JSON")
+    create.add_argument("--width", type=int, required=True, help="canvas width")
+    create.add_argument("--height", type=int, required=True, help="canvas height")
+    create.add_argument("--document-id", default=None, help="canonical UUID; generated if absent")
+    create.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
+    create.add_argument(
+        "--declared-space",
+        choices=tuple(item.value for item in ColourSpace),
+        default=ColourSpace.SRGB.value,
+        help="declared document colour space",
+    )
+
     info = project_verbs.add_parser("info", parents=[limits], help="open and describe a project")
     info.add_argument("root", help="project root directory")
+
+    layers = project_verbs.add_parser(
+        "layers",
+        parents=[limits],
+        help="list the immutable layer tree selected by HEAD",
+    )
+    layers.add_argument("root", help="project root directory")
 
     verify = project_verbs.add_parser(
         "verify",
@@ -100,6 +128,90 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="move unreachable objects into a private quarantine",
+    )
+
+    edit = groups.add_parser("edit", help="commit validated document mutations")
+    edit_verbs = edit.add_subparsers(dest="verb")
+
+    import_asset = edit_verbs.add_parser(
+        "import",
+        parents=[limits],
+        help="copy one encoded image carrier into a pixel layer",
+    )
+    import_asset.add_argument("root", help="project root directory")
+    import_asset.add_argument("asset", help="encoded PNG, JPEG, WebP or TIFF carrier")
+    import_asset.add_argument(
+        "--media-type",
+        choices=tuple(item.value for item in MediaType),
+        required=True,
+        help="declared closed media type",
+    )
+    import_asset.add_argument("--width", type=int, required=True, help="decoded width")
+    import_asset.add_argument("--height", type=int, required=True, help="decoded height")
+    import_asset.add_argument(
+        "--profile-sha256",
+        required=True,
+        help="embedded or assigned ICC profile content identity",
+    )
+    import_asset.add_argument("--name", default="Imported pixels", help="layer name")
+    import_asset.add_argument("--layer-id", default=None, help="canonical UUID; generated if absent")
+    import_asset.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
+    import_asset.add_argument("--parent-id", default=None, help="optional group-layer UUID")
+    import_asset.add_argument("--index", type=int, default=0, help="zero-based insertion index")
+
+    adjustment = edit_verbs.add_parser(
+        "adjustment",
+        parents=[limits],
+        help="add one non-destructive adjustment layer",
+    )
+    adjustment.add_argument("root", help="project root directory")
+    adjustment.add_argument(
+        "adjustment",
+        choices=tuple(item.value for item in AdjustmentId),
+        help="closed adjustment identity",
+    )
+    adjustment.add_argument(
+        "--parameter",
+        action="append",
+        default=[],
+        metavar="NAME=JSON",
+        help="repeat for every required adjustment parameter",
+    )
+    adjustment.add_argument("--name", default="Adjustment", help="layer name")
+    adjustment.add_argument("--layer-id", default=None, help="canonical UUID; generated if absent")
+    adjustment.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
+    adjustment.add_argument("--parent-id", default=None, help="optional group-layer UUID")
+    adjustment.add_argument("--index", type=int, default=0, help="zero-based insertion index")
+
+    mask = edit_verbs.add_parser(
+        "mask",
+        parents=[limits],
+        help="attach or replace a full-canvas editable Y u8 mask",
+    )
+    mask.add_argument("root", help="project root directory")
+    mask.add_argument("layer", help="target layer UUID")
+    mask.add_argument("mask", help="headerless full-canvas Y u8 bytes")
+    mask.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
+
+    layer = edit_verbs.add_parser(
+        "layer",
+        parents=[limits],
+        help="change common properties on one layer",
+    )
+    layer.add_argument("root", help="project root directory")
+    layer.add_argument("layer", help="target layer UUID")
+    layer.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
+    layer.add_argument("--name", default=None, help="replacement layer name")
+    visibility = layer.add_mutually_exclusive_group()
+    visibility.add_argument("--visible", dest="visible", action="store_true")
+    visibility.add_argument("--hidden", dest="visible", action="store_false")
+    layer.set_defaults(visible=None)
+    layer.add_argument("--opacity-u16", type=int, default=None, help="opacity in [0, 65535]")
+    layer.add_argument(
+        "--blend-mode",
+        choices=tuple(item.value for item in BlendMode),
+        default=None,
+        help="closed blend mode",
     )
 
     ops = groups.add_parser("ops", help="report the operation substrate")
@@ -152,8 +264,21 @@ def _dispatch(arguments: argparse.Namespace) -> commands.Outcome:
     if group == "project":
         limits = _limits_from(arguments)
         verb = arguments.verb
+        if verb == "create":
+            return commands.project_create_command(
+                arguments.root,
+                arguments.compatibility,
+                width=arguments.width,
+                height=arguments.height,
+                document_id_argument=arguments.document_id,
+                revision_id_argument=arguments.revision_id,
+                declared_space_argument=arguments.declared_space,
+                limits=limits,
+            )
         if verb == "info":
             return commands.project_info_command(arguments.root, limits)
+        if verb == "layers":
+            return commands.project_layers_command(arguments.root, limits)
         if verb == "verify":
             return commands.project_verify_command(arguments.root, limits)
         if verb == "generations":
@@ -169,6 +294,55 @@ def _dispatch(arguments: argparse.Namespace) -> commands.Outcome:
             return commands.project_gc_command(
                 arguments.root,
                 apply=arguments.apply,
+                limits=limits,
+            )
+    if group == "edit":
+        limits = _limits_from(arguments)
+        verb = arguments.verb
+        if verb == "import":
+            return commands.edit_import_command(
+                arguments.root,
+                arguments.asset,
+                media_type_argument=arguments.media_type,
+                width=arguments.width,
+                height=arguments.height,
+                profile_argument=arguments.profile_sha256,
+                name=arguments.name,
+                layer_id_argument=arguments.layer_id,
+                revision_id_argument=arguments.revision_id,
+                parent_id_argument=arguments.parent_id,
+                index=arguments.index,
+                limits=limits,
+            )
+        if verb == "adjustment":
+            return commands.edit_adjustment_command(
+                arguments.root,
+                arguments.adjustment,
+                parameter_arguments=tuple(arguments.parameter),
+                name=arguments.name,
+                layer_id_argument=arguments.layer_id,
+                revision_id_argument=arguments.revision_id,
+                parent_id_argument=arguments.parent_id,
+                index=arguments.index,
+                limits=limits,
+            )
+        if verb == "mask":
+            return commands.edit_mask_command(
+                arguments.root,
+                arguments.layer,
+                arguments.mask,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "layer":
+            return commands.edit_layer_command(
+                arguments.root,
+                arguments.layer,
+                revision_id_argument=arguments.revision_id,
+                name=arguments.name,
+                visible=arguments.visible,
+                opacity_u16=arguments.opacity_u16,
+                blend_mode_argument=arguments.blend_mode,
                 limits=limits,
             )
     if group == "ops":

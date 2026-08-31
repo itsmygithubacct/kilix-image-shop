@@ -28,12 +28,14 @@ from kilix_image_shop.cli.presentation import (
 from kilix_image_shop.domain.assets import AssetRef, ImportPolicy, MediaType
 from kilix_image_shop.domain.document import PROJECT_SCHEMA, DocumentState
 from kilix_image_shop.domain.geometry import Canvas
-from kilix_image_shop.domain.identifiers import DocumentId, ObjectId, RevisionId
+from kilix_image_shop.domain.identifiers import DocumentId, LayerId, ObjectId, RevisionId
 from kilix_image_shop.domain.layers import PixelLayer
 from kilix_image_shop.export.presets import ExportFormat, ExportPreset, deterministic_preset
 from kilix_image_shop.export.provenance import ExportArtifact, ExportProvenance
 from kilix_image_shop.store.generations import GenerationStore, create_project
+from kilix_image_shop.store.generations import read_head
 from kilix_image_shop.store.layout import ProjectLayout, StoreError
+from kilix_image_shop.store.recovery import list_recovery_candidates, open_project
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCUMENT_ID = DocumentId("00000000-0000-4000-8000-000000000115")
@@ -387,6 +389,220 @@ class ProjectTests(CliHarness):
             code, out, error = self.run_cli("project", "verify", str(root))
             self.assertEqual(code, int(ExitCode.OK), error)
             self.assertEqual(self.row(out, "closureVerified"), "0/0")
+
+
+class CommandMutationTests(CliHarness):
+    def compatibility_carrier(self, directory: pathlib.Path) -> pathlib.Path:
+        carrier = directory / "compatibility.json"
+        carrier.write_bytes(compatibility().canonical_bytes())
+        return carrier
+
+    def create_empty_project(self, directory: pathlib.Path) -> pathlib.Path:
+        root = directory / "project"
+        carrier = self.compatibility_carrier(directory)
+        code, out, error = self.run_cli(
+            "--output",
+            "json",
+            "project",
+            "create",
+            str(root),
+            str(carrier),
+            "--width",
+            "64",
+            "--height",
+            "48",
+        )
+        self.assertEqual(code, int(ExitCode.OK), error)
+        result = json.loads(out)["result"]
+        self.assertEqual(result["savePointCount"], 12)
+        self.assertEqual(result["validationClassCount"], 10)
+        self.assertTrue(result["readbackVerified"])
+        return root
+
+    def import_pixels(self, directory: pathlib.Path, root: pathlib.Path) -> str:
+        carrier = directory / "pixels.png"
+        carrier.write_bytes(ASSET_PAYLOAD)
+        code, out, error = self.run_cli(
+            "--output",
+            "json",
+            "edit",
+            "import",
+            str(root),
+            str(carrier),
+            "--media-type",
+            "image/png",
+            "--width",
+            "64",
+            "--height",
+            "48",
+            "--profile-sha256",
+            "1" * 64,
+            "--name",
+            "Source pixels",
+        )
+        self.assertEqual(code, int(ExitCode.OK), error)
+        result = json.loads(out)["result"]
+        self.assertTrue(result["documentMutated"])
+        self.assertTrue(result["readbackVerified"])
+        self.assertEqual(result["acceptedObjectPayloadCount"], 1)
+        self.assertEqual(len(result["changedLayerIds"]), 1)
+        return result["changedLayerIds"][0]
+
+    def test_create_import_adjust_mask_and_layer_changes_commit_end_to_end(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            pixel_id = self.import_pixels(directory, root)
+
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "adjustment",
+                str(root),
+                "exposure",
+                "--parameter",
+                "stops=0.5",
+                "--name",
+                "Exposure +0.5",
+                "--index",
+                "1",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            adjustment_result = json.loads(out)["result"]
+            self.assertTrue(adjustment_result["documentMutated"])
+            self.assertEqual(adjustment_result["acceptedObjectPayloadCount"], 0)
+
+            mask_payload = bytes(range(256)) * 12
+            mask_path = directory / "mask.y8"
+            mask_path.write_bytes(mask_payload)
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "mask",
+                str(root),
+                pixel_id,
+                str(mask_path),
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            mask_result = json.loads(out)["result"]
+            self.assertEqual(mask_result["acceptedObjectPayloadCount"], 1)
+            self.assertTrue(mask_result["readbackVerified"])
+
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "layer",
+                str(root),
+                pixel_id,
+                "--name",
+                "Retouched pixels",
+                "--opacity-u16",
+                "32768",
+                "--hidden",
+                "--blend-mode",
+                "multiply",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            self.assertTrue(json.loads(out)["result"]["readbackVerified"])
+
+            code, out, error = self.run_cli(
+                "--output", "json", "project", "layers", str(root)
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            layers = json.loads(out)["result"]["layers"]
+            self.assertEqual(len(layers), 2)
+            pixel = next(item for item in layers if item["layerId"] == pixel_id)
+            self.assertEqual(pixel["name"], "Retouched pixels")
+            self.assertEqual(pixel["opacityU16"], 32768)
+            self.assertEqual(pixel["blendMode"], "multiply")
+            self.assertFalse(pixel["visible"])
+            self.assertTrue(pixel["hasMask"])
+            adjustment = next(item for item in layers if item["kind"] == "adjustment")
+            self.assertEqual(adjustment["name"], "Exposure +0.5")
+
+            opened = open_project(ProjectLayout(root.resolve()), default_project_limits())
+            self.assertEqual(len(opened.generation.document.assets), 1)
+            self.assertEqual(len(opened.generation.document.layers), 2)
+            self.assertEqual(
+                opened.generation.document.layer_map[LayerId(pixel_id)].mask.object_id,
+                ObjectId.from_bytes(mask_payload),
+            )
+            self.assertEqual(
+                len(list_recovery_candidates(ProjectLayout(root.resolve()))),
+                5,
+            )
+
+    def test_invalid_mask_changes_zero_heads_or_generations(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            pixel_id = self.import_pixels(directory, root)
+            layout = ProjectLayout(root.resolve())
+            before_head = read_head(layout)
+            before_generations = list_recovery_candidates(layout)
+            short_mask = directory / "short.y8"
+            short_mask.write_bytes(b"not-a-full-canvas-mask")
+            code, out, error = self.run_cli(
+                "edit", "mask", str(root), pixel_id, str(short_mask)
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("full-canvas", error)
+            self.assertEqual(read_head(layout), before_head)
+            self.assertEqual(list_recovery_candidates(layout), before_generations)
+
+    def test_noncanonical_compatibility_is_refused_before_project_creation(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = directory / "project"
+            carrier = directory / "compatibility.json"
+            carrier.write_bytes(compatibility().canonical_bytes().rstrip(b"\n"))
+            code, out, error = self.run_cli(
+                "project",
+                "create",
+                str(root),
+                str(carrier),
+                "--width",
+                "64",
+                "--height",
+                "48",
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("canonical", error)
+            self.assertFalse(root.exists())
+
+    def test_bad_adjustment_parameters_change_zero_heads(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            layout = ProjectLayout(root.resolve())
+            before = read_head(layout)
+            code, out, error = self.run_cli(
+                "edit",
+                "adjustment",
+                str(root),
+                "exposure",
+                "--parameter",
+                "stops=0.5",
+                "--parameter",
+                "stops=1.0",
+            )
+            self.assertEqual(code, int(ExitCode.USAGE))
+            self.assertEqual(out, "")
+            self.assertIn("unique", error)
+            self.assertEqual(read_head(layout), before)
 
 
 class ExportTests(CliHarness):

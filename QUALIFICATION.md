@@ -39,7 +39,7 @@ records, installed-H0 behavior, or release admission.
 
 ## Local builder evidence
 
-The local aggregate gate covers 5/5 phases and currently reports 247/247 unit
+The local aggregate gate covers 5/5 phases and currently reports 251/251 unit
 tests, 2/2 distribution artifacts, and 3/3 legal carriers. The wheel installs
 1/1 console script, `kilix-image-shop`, whose readiness verb exits non-zero
 until the complete OD-7 package group is installed. The exact committed
@@ -71,17 +71,19 @@ The 15/15 acceptance-suite rows and review instructions are mapped in
   BLOCKED at 0/3 shared-repository integrations, owned by the Kilix,
   `kilix-tui-utils` and `kilix-content` streams. This repository changes 0/3 of
   them.
-- Command-surface editing verbs: BLOCKED at 0/1 on the profile-object source.
-  The application boundary resolves and verifies every object a revision
-  references, including the working colour profile and each asset profile. The
-  project object closure deliberately excludes those profile objects, and the
-  accepted package group carries `liblcms2-2` but 0/1 ICC profile carriers, so a
-  store-backed session has no defined source for their bytes. Closing it needs
-  either a project-closure change against the frozen contract, owned by the
-  release root and Track G through the G5b freeze, or an ICC profile carrier
-  added to the frozen group, owned by Track C and the release owner. No editing
-  verb is offered in the meantime, and the gap is recorded rather than worked
-  around.
+- Command-surface project mutations: MEASURED at 5/5 verbs and 4/4 causal
+  end-to-end controls. Project create, encoded-carrier import, non-destructive
+  adjustment insertion, full-canvas editable-mask attachment/replacement and
+  common layer-property mutation all pass the 12/12 save transaction, 10/10
+  open validation classes and 1/1 disk readback. Invalid mask and adjustment
+  controls change 0/1 HEAD values and 0/1 generation populations. This is
+  stored-document credit, not native decode/render/export credit.
+- Native profile-backed command session: BLOCKED at 0/1 on the profile-object
+  source. The project object closure deliberately excludes working and asset
+  profile objects, and the package group carries `liblcms2-2` but 0/1 ICC
+  profile carriers. Closing it needs either a project/G5b closure change, owned
+  by the release root and Track G, or an ICC carrier in the frozen group, owned
+  by Track C and the release owner.
 - Frozen G5b/provider entry order: BLOCKED at 0/2 entries, owned by the release
   root and Track G.
 - F108 editable-mask provider round trip: BLOCKED at 0/1, owned by F108 and the

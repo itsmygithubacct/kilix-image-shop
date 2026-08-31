@@ -2,12 +2,43 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
+import uuid
 from dataclasses import dataclass
 
 import kilix_image_shop
-from kilix_image_shop.domain.document import PROJECT_SCHEMA
-from kilix_image_shop.domain.identifiers import DomainValidationError, ObjectId
+from kilix_image_shop.domain.assets import AssetRef, ImportPolicy, MediaType
+from kilix_image_shop.domain.color import ColourSpace, ColourState, EngineCompatibility
+from kilix_image_shop.domain.commands import (
+    AddLayer,
+    AttachMask,
+    ImportAsset,
+    ReductionContext,
+    ResolvedObject,
+    SetLayerProperty,
+    reduce_command,
+)
+from kilix_image_shop.domain.document import PROJECT_SCHEMA, DocumentState
+from kilix_image_shop.domain.geometry import Canvas
+from kilix_image_shop.domain.identifiers import (
+    DocumentId,
+    DomainValidationError,
+    LayerId,
+    ObjectId,
+    RevisionId,
+)
+from kilix_image_shop.domain.layers import (
+    AdjustmentId,
+    AdjustmentLayer,
+    BlendMode,
+    GroupLayer,
+    MaskObject,
+    MaskSource,
+    PixelLayer,
+    TextLayer,
+)
+from kilix_image_shop.editing.adjustments import make_adjustment
 from kilix_image_shop.engine import compatibility
 from kilix_image_shop.export.presets import (
     EXPORT_PRESET_SCHEMA,
@@ -25,11 +56,16 @@ from kilix_image_shop.ops.diagnostics import diagnostic_catalogue
 from kilix_image_shop.ops.messages import OperationKind
 from kilix_image_shop.ops.orchestrator import OperationOrchestrator
 from kilix_image_shop.store.gc import apply_gc, preview_gc
-from kilix_image_shop.store.generations import read_head
+from kilix_image_shop.store.generations import (
+    GenerationStore,
+    create_project,
+    read_head,
+)
 from kilix_image_shop.store.layout import (
     ProjectLayout,
     ProjectLimits,
     StoreError,
+    parse_canonical_json,
     read_regular_file,
     write_new_file,
 )
@@ -123,6 +159,111 @@ def _object_id(value: str, label: str) -> ObjectId:
             f"{label} is not a content identity",
             ExitCode.USAGE,
         ) from exc
+
+
+def _document_id(value: str, label: str = "document identity") -> DocumentId:
+    try:
+        return DocumentId.parse(value)
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"{label} is not a canonical UUID", ExitCode.USAGE) from exc
+
+
+def _revision_id(value: str | None) -> RevisionId:
+    if value is None:
+        return RevisionId(str(uuid.uuid4()))
+    try:
+        return RevisionId.parse(value)
+    except (TypeError, ValueError) as exc:
+        raise CommandError("revision identity is not a canonical UUID", ExitCode.USAGE) from exc
+
+
+def _layer_id(value: str | None, label: str = "layer identity") -> LayerId:
+    if value is None:
+        return LayerId(str(uuid.uuid4()))
+    try:
+        return LayerId.parse(value)
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"{label} is not a canonical UUID", ExitCode.USAGE) from exc
+
+
+def _optional_layer_id(value: str | None, label: str) -> LayerId | None:
+    return None if value is None else _layer_id(value, label)
+
+
+def _new_project_root(value: str) -> pathlib.Path:
+    candidate = pathlib.Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = pathlib.Path.cwd() / candidate
+    if not candidate.name or candidate.name in {".", ".."}:
+        raise CommandError("project root basename is invalid", ExitCode.USAGE)
+    try:
+        parent = candidate.parent.resolve(strict=True)
+    except OSError as exc:
+        raise CommandError("project parent cannot be resolved", ExitCode.INVALID_DATA) from exc
+    if not parent.is_dir():
+        raise CommandError("project parent is not a directory", ExitCode.INVALID_DATA)
+    root = parent / candidate.name
+    try:
+        root.lstat()
+    except FileNotFoundError:
+        return root
+    except OSError as exc:
+        raise CommandError("project destination cannot be inspected", ExitCode.INVALID_DATA) from exc
+    raise CommandError("project destination already exists", ExitCode.INVALID_DATA)
+
+
+def _engine_compatibility(path_argument: str, limits: ProjectLimits) -> EngineCompatibility:
+    path = _resolved_file(path_argument, "engine compatibility carrier")
+    payload = _bounded_bytes(
+        path,
+        "engine compatibility carrier",
+        limits.max_manifest_bytes,
+    )
+    try:
+        value = parse_canonical_json(payload, maximum_bytes=limits.max_manifest_bytes)
+        compatibility_value = EngineCompatibility.from_data(value)
+    except _DATA_ERRORS as exc:
+        raise CommandError(
+            f"engine compatibility carrier is invalid: {exc}",
+            ExitCode.INVALID_DATA,
+        ) from exc
+    if compatibility_value.canonical_bytes() != payload:
+        raise CommandError(
+            "engine compatibility carrier is not canonical",
+            ExitCode.INVALID_DATA,
+        )
+    return compatibility_value
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(value)
+
+
+def _parameter_map(arguments: tuple[str, ...]) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for argument in arguments:
+        name, separator, raw = argument.partition("=")
+        if not separator or not name or name in values:
+            raise CommandError(
+                "adjustment parameters must be unique NAME=JSON pairs",
+                ExitCode.USAGE,
+            )
+        try:
+            value = json.loads(raw, parse_constant=_reject_json_constant)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise CommandError(
+                f"adjustment parameter {name!r} is not strict JSON",
+                ExitCode.USAGE,
+            ) from exc
+        if isinstance(value, list):
+            value = tuple(value)
+        if isinstance(value, (dict, type(None))):
+            raise CommandError(
+                f"adjustment parameter {name!r} has an unsupported JSON type",
+                ExitCode.USAGE,
+            )
+        values[name] = value
+    return values
 
 
 def _opened(root: pathlib.Path, limits: ProjectLimits) -> OpenedProject:
@@ -269,6 +410,399 @@ def project_info_command(root_argument: str, limits: ProjectLimits) -> Outcome:
     }
     data["limits"] = limit_data(limits)
     return Outcome(Report("project.info", rows, data), ExitCode.OK)
+
+
+def project_create_command(
+    root_argument: str,
+    compatibility_argument: str,
+    *,
+    width: int,
+    height: int,
+    document_id_argument: str | None,
+    revision_id_argument: str | None,
+    declared_space_argument: str,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Create one empty project through the complete atomic save transaction."""
+
+    root = _new_project_root(root_argument)
+    compatibility_value = _engine_compatibility(compatibility_argument, limits)
+    document_id = (
+        DocumentId(str(uuid.uuid4()))
+        if document_id_argument is None
+        else _document_id(document_id_argument)
+    )
+    revision_id = _revision_id(revision_id_argument)
+    try:
+        declared_space = ColourSpace(declared_space_argument)
+        document = DocumentState(
+            schema=PROJECT_SCHEMA,
+            document_id=document_id,
+            revision_id=revision_id,
+            canvas=Canvas(width, height),
+            colour=ColourState(
+                working_profile=compatibility_value.working_profile,
+                declared_space=declared_space,
+                conversion_policy=compatibility_value.conversion_policy,
+            ),
+            engine_compatibility=compatibility_value,
+            assets=(),
+            root_layer_ids=(),
+            layers=(),
+        )
+        layout, generation = create_project(
+            root,
+            document,
+            limits=limits,
+            object_payloads={},
+        )
+        opened = open_project(layout, limits)
+    except _DATA_ERRORS as exc:
+        raise CommandError(f"project cannot be created: {exc}", ExitCode.INVALID_DATA) from exc
+    if opened.generation != generation or opened.generation.document != document:
+        raise CommandError("project readback differs after creation", ExitCode.INTERNAL)
+    rows = (
+        ("documentId", document.document_id.value),
+        ("revisionId", document.revision_id.value),
+        ("headGeneration", generation.generation_id.value),
+        ("canvas", f"{document.canvas.width}x{document.canvas.height}"),
+        ("layers", counted(0, 0)),
+        ("saveTransaction", counted(12, 12)),
+        ("validationClasses", counted(len(opened.validated_classes), 10)),
+        ("readback", counted(1, 1)),
+    )
+    data = {
+        "documentId": document.document_id.value,
+        "revisionId": document.revision_id.value,
+        "headGeneration": generation.generation_id.value,
+        "width": document.canvas.width,
+        "height": document.canvas.height,
+        "layerCount": 0,
+        "savePointCount": 12,
+        "validationClassCount": len(opened.validated_classes),
+        "readbackVerified": True,
+    }
+    return Outcome(Report("project.create", rows, data), ExitCode.OK)
+
+
+def project_layers_command(root_argument: str, limits: ProjectLimits) -> Outcome:
+    """List the exact immutable layer population selected by HEAD."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    document = opened.generation.document
+    parents: dict[LayerId, LayerId | None] = {
+        layer_id: None for layer_id in document.root_layer_ids
+    }
+    for layer in document.layers:
+        if isinstance(layer, GroupLayer):
+            for child in layer.child_layer_ids:
+                parents[child] = layer.layer_id
+    ordered: list[tuple[object, LayerId | None, int]] = []
+
+    def walk(layer_id: LayerId, depth: int) -> None:
+        layer = document.layer_map[layer_id]
+        ordered.append((layer, parents[layer_id], depth))
+        if isinstance(layer, GroupLayer):
+            for child in layer.child_layer_ids:
+                walk(child, depth + 1)
+
+    for root_id in document.root_layer_ids:
+        walk(root_id, 0)
+    rows = tuple(
+        (
+            f"layer.{index + 1}",
+            f"{layer.layer_id.value} {type(layer).__name__} depth={depth} name={layer.name!r}",
+        )
+        for index, (layer, _, depth) in enumerate(ordered)
+    ) + (
+        ("headGeneration", opened.generation.generation_id.value),
+        ("layers", counted(len(ordered), len(document.layers))),
+    )
+    data = {
+        "headGeneration": opened.generation.generation_id.value,
+        "layers": [
+            {
+                "layerId": layer.layer_id.value,
+                "kind": {
+                    PixelLayer: "pixel",
+                    AdjustmentLayer: "adjustment",
+                    TextLayer: "text",
+                    GroupLayer: "group",
+                }[type(layer)],
+                "name": layer.name,
+                "parentId": None if parent is None else parent.value,
+                "depth": depth,
+                "visible": layer.visible,
+                "opacityU16": layer.opacity_u16,
+                "blendMode": layer.blend_mode.value,
+                "hasMask": getattr(layer, "mask", None) is not None,
+            }
+            for layer, parent, depth in ordered
+        ],
+        "layerCount": len(ordered),
+    }
+    return Outcome(Report("project.layers", rows, data), ExitCode.OK)
+
+
+def _commit_edit(
+    root_argument: str,
+    limits: ProjectLimits,
+    command: object,
+    *,
+    payloads: dict[ObjectId, bytes],
+    report_name: str,
+) -> Outcome:
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    before = opened.generation
+    context = ReductionContext(
+        tuple(
+            ResolvedObject(object_id, len(payload))
+            for object_id, payload in sorted(
+                payloads.items(), key=lambda item: item[0].value
+            )
+        )
+    )
+    try:
+        reduction = reduce_command(before.document, command, context)
+        generation = GenerationStore(ProjectLayout(root), limits).save(
+            reduction.state,
+            object_payloads=payloads,
+            expected_head=before.generation_id,
+        )
+        readback = open_project(ProjectLayout(root), limits)
+    except _DATA_ERRORS as exc:
+        raise CommandError(f"edit cannot be committed: {exc}", ExitCode.INVALID_DATA) from exc
+    if readback.generation != generation or readback.generation.document != reduction.state:
+        raise CommandError("edit readback differs after commit", ExitCode.INTERNAL)
+    rows = (
+        ("documentId", reduction.state.document_id.value),
+        ("beforeRevision", reduction.before_revision.value),
+        ("revisionId", reduction.state.revision_id.value),
+        ("headGeneration", generation.generation_id.value),
+        (
+            "changedLayers",
+            counted(len(reduction.changed_layer_ids), len(reduction.changed_layer_ids)),
+        ),
+        ("objectPayloadsAccepted", counted(len(payloads), len(payloads))),
+        ("saveTransaction", counted(12, 12)),
+        ("validationClasses", counted(len(readback.validated_classes), 10)),
+        ("documentMutation", counted(1, 1)),
+        ("readback", counted(1, 1)),
+    )
+    data = {
+        "documentId": reduction.state.document_id.value,
+        "beforeRevision": reduction.before_revision.value,
+        "revisionId": reduction.state.revision_id.value,
+        "headGeneration": generation.generation_id.value,
+        "changedLayerIds": [item.value for item in reduction.changed_layer_ids],
+        "acceptedObjectPayloadCount": len(payloads),
+        "savePointCount": 12,
+        "validationClassCount": len(readback.validated_classes),
+        "documentMutated": True,
+        "readbackVerified": True,
+    }
+    return Outcome(Report(report_name, rows, data), ExitCode.OK)
+
+
+def edit_import_command(
+    root_argument: str,
+    asset_argument: str,
+    *,
+    media_type_argument: str,
+    width: int,
+    height: int,
+    profile_argument: str,
+    name: str,
+    layer_id_argument: str | None,
+    revision_id_argument: str | None,
+    parent_id_argument: str | None,
+    index: int,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Copy one bounded encoded image carrier into a new pixel layer."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    source = _resolved_file(asset_argument, "asset")
+    payload = _bounded_bytes(source, "asset", limits.max_object_bytes)
+    identity = ObjectId.from_bytes(payload)
+    try:
+        media_type = MediaType(media_type_argument)
+        profile = ObjectId.parse(profile_argument)
+        layer_id = _layer_id(layer_id_argument)
+        revision_id = _revision_id(revision_id_argument)
+        parent_id = _optional_layer_id(parent_id_argument, "parent layer identity")
+        asset = AssetRef(
+            digest=identity,
+            byte_count=len(payload),
+            media_type=media_type,
+            width=width,
+            height=height,
+            profile_digest=profile,
+            import_policy=ImportPolicy.COPIED,
+        )
+        layer = PixelLayer(layer_id=layer_id, name=name, asset_digest=identity)
+        command = ImportAsset(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=revision_id,
+            asset=asset,
+            layer=layer,
+            parent_id=parent_id,
+            index=index,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"asset import arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={identity: payload},
+        report_name="edit.import",
+    )
+
+
+def edit_adjustment_command(
+    root_argument: str,
+    adjustment_argument: str,
+    *,
+    parameter_arguments: tuple[str, ...],
+    name: str,
+    layer_id_argument: str | None,
+    revision_id_argument: str | None,
+    parent_id_argument: str | None,
+    index: int,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Add one validated non-destructive adjustment layer."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    try:
+        adjustment = make_adjustment(
+            AdjustmentId(adjustment_argument),
+            _parameter_map(parameter_arguments),
+        )
+        layer = AdjustmentLayer(
+            layer_id=_layer_id(layer_id_argument),
+            name=name,
+            adjustment=adjustment,
+        )
+        command = AddLayer(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer=layer,
+            parent_id=_optional_layer_id(parent_id_argument, "parent layer identity"),
+            index=index,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"adjustment arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.adjustment",
+    )
+
+
+def edit_mask_command(
+    root_argument: str,
+    layer_id_argument: str,
+    mask_argument: str,
+    *,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Attach or replace one full-canvas editable foreground-alpha mask."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    document = opened.generation.document
+    source = _resolved_file(mask_argument, "mask")
+    expected_bytes = document.canvas.width * document.canvas.height
+    if expected_bytes > limits.max_object_bytes:
+        raise CommandError("mask exceeds the object byte ceiling", ExitCode.INVALID_DATA)
+    payload = _bounded_bytes(source, "mask", expected_bytes)
+    if len(payload) != expected_bytes:
+        raise CommandError(
+            "mask bytes differ from the full-canvas Y u8 geometry",
+            ExitCode.INVALID_DATA,
+        )
+    identity = ObjectId.from_bytes(payload)
+    try:
+        layer_id = _layer_id(layer_id_argument)
+        mask = MaskObject(
+            object_id=identity,
+            width=document.canvas.width,
+            height=document.canvas.height,
+            origin_x=document.canvas.origin_x,
+            origin_y=document.canvas.origin_y,
+            source=MaskSource.HAND_PAINTED,
+        )
+        command = AttachMask(
+            expected_revision=document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=layer_id,
+            mask=mask,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"mask arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={identity: payload},
+        report_name="edit.mask",
+    )
+
+
+def edit_layer_command(
+    root_argument: str,
+    layer_id_argument: str,
+    *,
+    revision_id_argument: str | None,
+    name: str | None,
+    visible: bool | None,
+    opacity_u16: int | None,
+    blend_mode_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Change validated common layer properties in one atomic generation."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    try:
+        blend_mode = (
+            None if blend_mode_argument is None else BlendMode(blend_mode_argument)
+        )
+        command = SetLayerProperty(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=_layer_id(layer_id_argument),
+            name=name,
+            visible=visible,
+            opacity_u16=opacity_u16,
+            blend_mode=blend_mode,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"layer arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.layer",
+    )
 
 
 def project_verify_command(root_argument: str, limits: ProjectLimits) -> Outcome:
@@ -650,13 +1184,19 @@ __all__ = (
     "CommandError",
     "Outcome",
     "doctor_command",
+    "edit_adjustment_command",
+    "edit_import_command",
+    "edit_layer_command",
+    "edit_mask_command",
     "export_preset_command",
     "export_verify_command",
     "ops_diagnostics_command",
     "ops_providers_command",
+    "project_create_command",
     "project_gc_command",
     "project_generations_command",
     "project_info_command",
+    "project_layers_command",
     "project_recover_command",
     "project_verify_command",
     "version_command",

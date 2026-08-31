@@ -30,18 +30,25 @@ the sole native boundary.
 ## Command surface
 
 The wheel installs 1/1 console script, `kilix-image-shop`. Every verb consumes
-the same core values the later toolkit surfaces will consume, and none of them
-starts the engine, renders a pixel, or mutates a document:
+the same core values the later toolkit surfaces will consume. No verb starts
+the native engine or claims a rendered pixel; the edit verbs do commit checked
+document revisions through the 12/12-point generation transaction:
 
 | Verb | Result |
 | --- | --- |
 | `version` | product, schema and accepted OD-7 group identity |
 | `doctor` | per-component readiness for the OD-7 group, interpreter and providers |
+| `project create ROOT COMPATIBILITY --width W --height H` | creates an empty canonical project and verifies its first generation from disk |
 | `project info ROOT` | opens a project through all 10/10 validation classes |
+| `project layers ROOT` | lists the exact layer tree selected by HEAD |
 | `project verify ROOT` | re-digests every object the current generation needs |
 | `project generations ROOT` | lists retained generations and marks HEAD |
 | `project recover ROOT GENERATION [--apply]` | previews, and only with `--apply` selects, another generation |
 | `project gc ROOT [--apply]` | previews, and only with `--apply` quarantines, unreachable objects |
+| `edit import ROOT ASSET ...` | copies a bounded encoded carrier into a new validated pixel layer and generation |
+| `edit adjustment ROOT ID --parameter NAME=JSON ...` | adds one closed non-destructive adjustment layer |
+| `edit mask ROOT LAYER MASK` | attaches or replaces a full-canvas editable foreground-alpha Y u8 mask |
+| `edit layer ROOT LAYER ...` | changes checked visibility, opacity, blend mode or name fields |
 | `ops providers` | the production registry exactly as I1 ships it: 0/2 adapters |
 | `ops diagnostics` | the closed 8/8 local diagnostic catalogue |
 | `export preset ROOT FORMAT [--out PATH]` | binds one deterministic preset without rendering |
@@ -64,9 +71,12 @@ Local core materialization covers slices 1/8 through 7/8. Slice 8/8, the Kilix
 tab surface and toolkit adapters, is BLOCKED at 0/1 toolkit selections, owned
 by the release owner. The contained GUI, the `kilix-tui-utils` shell surface,
 the Kilix tab dispatch and the `kilix-content` catalog entry are 0/4 delivered
-here; each belongs to a repository this stream does not own. Editing verbs are
-withheld at 0/1 pending the profile-object source recorded in
-[`QUALIFICATION.md`](QUALIFICATION.md).
+here; each belongs to a repository this stream does not own. The toolkit-free
+create/import/adjust/mask/layer path is delivered at 5/5 verbs and every
+successful mutation receives a 1/1 post-commit disk readback. Encoded image
+bytes and declared geometry/profile identities are stored without claiming a
+native decode; engine-backed rendering and export still require the profile
+source and installed group recorded in [`QUALIFICATION.md`](QUALIFICATION.md).
 
 The two admitted model-backed operations have 0/2 production adapters in I1.
 Their later I2A integrations remain separately candidate-bound; operation
