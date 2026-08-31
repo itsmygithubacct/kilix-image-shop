@@ -53,6 +53,7 @@ from kilix_image_shop.domain.layers import (
 )
 from kilix_image_shop.editing.adjustments import make_adjustment
 from kilix_image_shop.editing.masking import paint_mask
+from kilix_image_shop.editing.selection import selection_to_mask
 from kilix_image_shop.editing.text import (
     EditableText,
     TextValidationError,
@@ -1498,6 +1499,72 @@ def edit_selection_command(
         command,
         payloads={identity: payload},
         report_name="edit.selection",
+    )
+
+
+def edit_mask_from_selection_command(
+    root_argument: str,
+    layer_id_argument: str,
+    *,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Attach the active raster selection as a lossless editable layer mask."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    selection = opened.generation.document.selection
+    if selection is None:
+        raise CommandError("document has no selection", ExitCode.INVALID_DATA)
+    if selection.kind is not SelectionKind.RASTER:
+        raise CommandError(
+            "mask conversion requires a raster selection",
+            ExitCode.INVALID_DATA,
+        )
+    expected_bytes = selection.bounds.width * selection.bounds.height
+    record = next(
+        (
+            item
+            for item in opened.generation.objects
+            if item.object_id == selection.object_id
+        ),
+        None,
+    )
+    if record is None or record.byte_count != expected_bytes:
+        raise CommandError(
+            "raster selection bytes differ from its Y u8 bounds",
+            ExitCode.INVALID_DATA,
+        )
+    try:
+        mask = selection_to_mask(selection, selection.object_id)
+        command = AttachMask(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=_layer_id(layer_id_argument),
+            mask=mask,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(
+            f"selection mask arguments are invalid: {exc}",
+            ExitCode.USAGE,
+        ) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.mask-from-selection",
+        detail_rows=(
+            ("selectionObjectsReused", counted(1, 1)),
+            ("newObjectPayloads", counted(0, 0)),
+        ),
+        detail_data={
+            "selectionSha256": selection.object_id.value,
+            "selectionObjectReuseCount": 1,
+            "newObjectPayloadCount": 0,
+        },
     )
 
 

@@ -29,7 +29,7 @@ from kilix_image_shop.domain.assets import AssetRef, ImportPolicy, MediaType
 from kilix_image_shop.domain.document import PROJECT_SCHEMA, DocumentState
 from kilix_image_shop.domain.geometry import Canvas
 from kilix_image_shop.domain.identifiers import DocumentId, LayerId, ObjectId, RevisionId
-from kilix_image_shop.domain.layers import PixelLayer, TextLayer
+from kilix_image_shop.domain.layers import MaskSource, PixelLayer, TextLayer
 from kilix_image_shop.export.presets import ExportFormat, ExportPreset, deterministic_preset
 from kilix_image_shop.export.provenance import ExportArtifact, ExportProvenance
 from kilix_image_shop.store.generations import GenerationStore, create_project
@@ -547,6 +547,107 @@ class CommandMutationTests(CliHarness):
             self.assertEqual(out, "")
             self.assertIn("stale", error)
             self.assertEqual(read_head(layout), accepted_head)
+
+    def test_raster_selection_becomes_mask_without_copy_and_refuses_vector(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            pixel_id = self.import_pixels(directory, root)
+            selection_payload = bytes(range(100))
+            selection_path = directory / "selection.y8"
+            selection_path.write_bytes(selection_payload)
+            code, _, error = self.run_cli(
+                "edit",
+                "selection",
+                str(root),
+                str(selection_path),
+                "--kind",
+                "raster",
+                "--x",
+                "3",
+                "--y",
+                "4",
+                "--width",
+                "10",
+                "--height",
+                "10",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            selection_id = ObjectId.from_bytes(selection_payload)
+
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "mask-from-selection",
+                str(root),
+                pixel_id,
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            result = json.loads(out)["result"]
+            self.assertEqual(result["selectionSha256"], selection_id.value)
+            self.assertEqual(result["selectionObjectReuseCount"], 1)
+            self.assertEqual(result["newObjectPayloadCount"], 0)
+
+            layout = ProjectLayout(root.resolve())
+            opened = open_project(layout, default_project_limits())
+            layer = opened.generation.document.layer_map[LayerId(pixel_id)]
+            self.assertEqual(layer.mask.object_id, selection_id)
+            self.assertEqual(layer.mask.source_ref, selection_id)
+            self.assertEqual(layer.mask.source, MaskSource.SELECTION)
+            self.assertEqual(
+                (layer.mask.origin_x, layer.mask.origin_y, layer.mask.width, layer.mask.height),
+                (3, 4, 10, 10),
+            )
+            self.assertEqual(
+                sum(
+                    item.object_id == selection_id
+                    for item in opened.generation.objects
+                ),
+                1,
+            )
+
+            code, _, error = self.run_cli("edit", "selection-clear", str(root))
+            self.assertEqual(code, int(ExitCode.OK), error)
+            reopened = open_project(layout, default_project_limits())
+            self.assertIsNone(reopened.generation.document.selection)
+            self.assertEqual(
+                sum(
+                    item.object_id == selection_id
+                    for item in reopened.generation.objects
+                ),
+                1,
+            )
+
+            vector_path = directory / "selection.vector"
+            vector_path.write_bytes(b"synthetic-vector-selection")
+            code, _, error = self.run_cli(
+                "edit",
+                "selection",
+                str(root),
+                str(vector_path),
+                "--kind",
+                "vector",
+                "--x",
+                "0",
+                "--y",
+                "0",
+                "--width",
+                "5",
+                "--height",
+                "5",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            before_refusal = read_head(layout)
+            code, out, error = self.run_cli(
+                "edit", "mask-from-selection", str(root), pixel_id
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("requires a raster selection", error)
+            self.assertEqual(read_head(layout), before_refusal)
 
     def test_editable_text_add_and_update_pin_font_objects_and_preview(self) -> None:
         import tempfile

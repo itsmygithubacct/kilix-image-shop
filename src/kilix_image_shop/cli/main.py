@@ -237,6 +237,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--revision-id", default=None, help="canonical UUID; generated if absent"
     )
 
+    mask_from_selection = edit_verbs.add_parser(
+        "mask-from-selection",
+        parents=[limits],
+        help="attach the active raster selection as an editable layer mask",
+    )
+    mask_from_selection.add_argument("root", help="project root directory")
+    mask_from_selection.add_argument("layer", help="target layer UUID")
+    mask_from_selection.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
     layer = edit_verbs.add_parser(
         "layer",
         parents=[limits],
@@ -568,6 +579,13 @@ def _dispatch(arguments: argparse.Namespace) -> commands.Outcome:
                 arguments.layer,
                 arguments.mask,
                 before_argument=arguments.before_sha256,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "mask-from-selection":
+            return commands.edit_mask_from_selection_command(
+                arguments.root,
+                arguments.layer,
                 revision_id_argument=arguments.revision_id,
                 limits=limits,
             )
