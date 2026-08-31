@@ -397,7 +397,13 @@ class CommandMutationTests(CliHarness):
         carrier.write_bytes(compatibility().canonical_bytes())
         return carrier
 
-    def create_empty_project(self, directory: pathlib.Path) -> pathlib.Path:
+    def create_empty_project(
+        self,
+        directory: pathlib.Path,
+        *,
+        width: int = 64,
+        height: int = 48,
+    ) -> pathlib.Path:
         root = directory / "project"
         carrier = self.compatibility_carrier(directory)
         code, out, error = self.run_cli(
@@ -408,9 +414,9 @@ class CommandMutationTests(CliHarness):
             str(root),
             str(carrier),
             "--width",
-            "64",
+            str(width),
             "--height",
-            "48",
+            str(height),
         )
         self.assertEqual(code, int(ExitCode.OK), error)
         result = json.loads(out)["result"]
@@ -419,7 +425,14 @@ class CommandMutationTests(CliHarness):
         self.assertTrue(result["readbackVerified"])
         return root
 
-    def import_pixels(self, directory: pathlib.Path, root: pathlib.Path) -> str:
+    def import_pixels(
+        self,
+        directory: pathlib.Path,
+        root: pathlib.Path,
+        *,
+        width: int = 64,
+        height: int = 48,
+    ) -> str:
         carrier = directory / "pixels.png"
         carrier.write_bytes(ASSET_PAYLOAD)
         code, out, error = self.run_cli(
@@ -432,9 +445,9 @@ class CommandMutationTests(CliHarness):
             "--media-type",
             "image/png",
             "--width",
-            "64",
+            str(width),
             "--height",
-            "48",
+            str(height),
             "--profile-sha256",
             "1" * 64,
             "--name",
@@ -447,6 +460,93 @@ class CommandMutationTests(CliHarness):
         self.assertEqual(result["acceptedObjectPayloadCount"], 1)
         self.assertEqual(len(result["changedLayerIds"]), 1)
         return result["changedLayerIds"][0]
+
+    def test_mask_paint_commits_exact_sparse_delta_and_refuses_stale_or_noop(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            width = 257
+            height = 257
+            root = self.create_empty_project(directory, width=width, height=height)
+            pixel_id = self.import_pixels(
+                directory,
+                root,
+                width=width,
+                height=height,
+            )
+            before_payload = bytes(width * height)
+            before_path = directory / "before-mask.y8"
+            before_path.write_bytes(before_payload)
+            code, _, error = self.run_cli(
+                "edit", "mask", str(root), pixel_id, str(before_path)
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            before_id = ObjectId.from_bytes(before_payload)
+
+            painted = bytearray(before_payload)
+            painted[0] = 255
+            painted[-1] = 128
+            painted_payload = bytes(painted)
+            painted_path = directory / "painted-mask.y8"
+            painted_path.write_bytes(painted_payload)
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "mask-paint",
+                str(root),
+                pixel_id,
+                str(painted_path),
+                "--before-sha256",
+                before_id.value,
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            result = json.loads(out)["result"]
+            self.assertEqual(result["changedTileCount"], 2)
+            self.assertEqual(result["tileCount"], 4)
+            self.assertEqual(result["changedTileRefCount"], 2)
+            self.assertTrue(result["readbackVerified"])
+            painted_id = ObjectId.from_bytes(painted_payload)
+            self.assertEqual(result["maskSha256"], painted_id.value)
+
+            layout = ProjectLayout(root.resolve())
+            opened = open_project(layout, default_project_limits())
+            layer = opened.generation.document.layer_map[LayerId(pixel_id)]
+            self.assertEqual(layer.mask.object_id, painted_id)
+            accepted_head = read_head(layout)
+
+            code, out, error = self.run_cli(
+                "edit",
+                "mask-paint",
+                str(root),
+                pixel_id,
+                str(painted_path),
+                "--before-sha256",
+                painted_id.value,
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("zero tiles", error)
+            self.assertEqual(read_head(layout), accepted_head)
+
+            changed_again = bytearray(painted_payload)
+            changed_again[1] = 64
+            stale_path = directory / "stale-mask.y8"
+            stale_path.write_bytes(bytes(changed_again))
+            code, out, error = self.run_cli(
+                "edit",
+                "mask-paint",
+                str(root),
+                pixel_id,
+                str(stale_path),
+                "--before-sha256",
+                before_id.value,
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("stale", error)
+            self.assertEqual(read_head(layout), accepted_head)
 
     def test_create_import_adjust_mask_and_layer_changes_commit_end_to_end(self) -> None:
         import tempfile

@@ -47,7 +47,9 @@ from kilix_image_shop.domain.layers import (
     TextLayer,
 )
 from kilix_image_shop.editing.adjustments import make_adjustment
+from kilix_image_shop.editing.masking import paint_mask
 from kilix_image_shop.engine import compatibility
+from kilix_image_shop.engine.api import mask_digest_index
 from kilix_image_shop.export.presets import (
     EXPORT_PRESET_SCHEMA,
     ExportFormat,
@@ -560,17 +562,27 @@ def _commit_edit(
     *,
     payloads: dict[ObjectId, bytes],
     report_name: str,
+    resolved_objects: tuple[ResolvedObject, ...] = (),
+    detail_rows: tuple[tuple[str, str], ...] = (),
+    detail_data: dict[str, object] | None = None,
 ) -> Outcome:
     root = _resolved_directory(root_argument, "project root")
     opened = _opened(root, limits)
     before = opened.generation
-    context = ReductionContext(
-        tuple(
-            ResolvedObject(object_id, len(payload))
-            for object_id, payload in sorted(
-                payloads.items(), key=lambda item: item[0].value
+    resolved = {
+        object_id: ResolvedObject(object_id, len(payload))
+        for object_id, payload in payloads.items()
+    }
+    for item in resolved_objects:
+        present = resolved.get(item.object_id)
+        if present is not None and present.byte_count != item.byte_count:
+            raise CommandError(
+                "resolved object metadata disagrees with its supplied payload",
+                ExitCode.INTERNAL,
             )
-        )
+        resolved[item.object_id] = item
+    context = ReductionContext(
+        tuple(sorted(resolved.values(), key=lambda item: item.object_id.value))
     )
     try:
         reduction = reduce_command(before.document, command, context)
@@ -598,7 +610,7 @@ def _commit_edit(
         ("validationClasses", counted(len(readback.validated_classes), 10)),
         ("documentMutation", counted(1, 1)),
         ("readback", counted(1, 1)),
-    )
+    ) + detail_rows
     data = {
         "documentId": reduction.state.document_id.value,
         "beforeRevision": reduction.before_revision.value,
@@ -611,6 +623,8 @@ def _commit_edit(
         "documentMutated": True,
         "readbackVerified": True,
     }
+    if detail_data is not None:
+        data.update(detail_data)
     return Outcome(Report(report_name, rows, data), ExitCode.OK)
 
 
@@ -769,6 +783,112 @@ def edit_mask_command(
         command,
         payloads={identity: payload},
         report_name="edit.mask",
+    )
+
+
+def edit_mask_paint_command(
+    root_argument: str,
+    layer_id_argument: str,
+    mask_argument: str,
+    *,
+    before_argument: str,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Commit a checked full-mask paint result and its exact sparse tile delta."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    document = opened.generation.document
+    source = _resolved_file(mask_argument, "painted mask")
+    try:
+        layer_id = _layer_id(layer_id_argument)
+        before_id = _object_id(before_argument, "before-mask identity")
+        layer = document.layer_map.get(layer_id)
+        current = None if layer is None else getattr(layer, "mask", None)
+        if current is None:
+            raise CommandError("mask-paint target has no current mask", ExitCode.INVALID_DATA)
+        if current.object_id != before_id:
+            raise CommandError(
+                "mask-paint before identity is stale",
+                ExitCode.INVALID_DATA,
+            )
+        expected_bytes = current.width * current.height
+        if expected_bytes > limits.max_object_bytes:
+            raise CommandError("painted mask exceeds the object byte ceiling", ExitCode.INVALID_DATA)
+        payload = _bounded_bytes(source, "painted mask", expected_bytes)
+        if len(payload) != expected_bytes:
+            raise CommandError(
+                "painted mask bytes differ from the current Y u8 geometry",
+                ExitCode.INVALID_DATA,
+            )
+        record = next(
+            (
+                item
+                for item in opened.generation.objects
+                if item.object_id == current.object_id
+            ),
+            None,
+        )
+        if record is None:
+            raise CommandError(
+                "current mask is absent from the generation closure",
+                ExitCode.INVALID_DATA,
+            )
+        before_payload = ObjectStore(ProjectLayout(root), limits).read(record)
+        extent = Rect(current.origin_x, current.origin_y, current.width, current.height)
+        before_tiles = mask_digest_index(before_payload, extent)
+        after_tiles = mask_digest_index(payload, extent)
+        changed_tiles = tuple(
+            after
+            for before, after in zip(before_tiles, after_tiles, strict=True)
+            if before.digest != after.digest
+        )
+        if not changed_tiles:
+            raise CommandError("painted mask changes zero tiles", ExitCode.INVALID_DATA)
+        changed_refs = tuple(
+            sorted({item.digest for item in changed_tiles}, key=lambda item: item.value)
+        )
+        identity = ObjectId.from_bytes(payload)
+        command = paint_mask(
+            document,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=layer_id,
+            mask=MaskObject(
+                object_id=identity,
+                width=current.width,
+                height=current.height,
+                origin_x=current.origin_x,
+                origin_y=current.origin_y,
+                source=MaskSource.HAND_PAINTED,
+            ),
+            changed_tile_refs=changed_refs,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"mask-paint arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={identity: payload},
+        resolved_objects=tuple(
+            ResolvedObject(item.digest, item.rectangle.width * item.rectangle.height)
+            for item in changed_tiles
+        ),
+        report_name="edit.mask-paint",
+        detail_rows=(
+            ("changedTiles", counted(len(changed_tiles), len(after_tiles))),
+            ("changedTileRefs", counted(len(changed_refs), len(changed_tiles))),
+        ),
+        detail_data={
+            "beforeMaskSha256": before_id.value,
+            "maskSha256": identity.value,
+            "changedTileCount": len(changed_tiles),
+            "tileCount": len(after_tiles),
+            "changedTileRefCount": len(changed_refs),
+        },
     )
 
 

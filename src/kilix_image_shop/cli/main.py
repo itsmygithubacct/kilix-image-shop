@@ -193,6 +193,23 @@ def build_parser() -> argparse.ArgumentParser:
     mask.add_argument("mask", help="headerless full-canvas Y u8 bytes")
     mask.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
 
+    mask_paint = edit_verbs.add_parser(
+        "mask-paint",
+        parents=[limits],
+        help="commit a full-mask paint result with an exact sparse tile delta",
+    )
+    mask_paint.add_argument("root", help="project root directory")
+    mask_paint.add_argument("layer", help="target layer UUID")
+    mask_paint.add_argument("mask", help="headerless painted Y u8 bytes")
+    mask_paint.add_argument(
+        "--before-sha256",
+        required=True,
+        help="required current mask identity; stale results are refused",
+    )
+    mask_paint.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
     layer = edit_verbs.add_parser(
         "layer",
         parents=[limits],
@@ -459,6 +476,15 @@ def _dispatch(arguments: argparse.Namespace) -> commands.Outcome:
                 arguments.root,
                 arguments.layer,
                 arguments.mask,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "mask-paint":
+            return commands.edit_mask_paint_command(
+                arguments.root,
+                arguments.layer,
+                arguments.mask,
+                before_argument=arguments.before_sha256,
                 revision_id_argument=arguments.revision_id,
                 limits=limits,
             )

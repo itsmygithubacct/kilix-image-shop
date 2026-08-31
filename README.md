@@ -49,6 +49,7 @@ document revisions through the 12/12-point generation transaction:
 | `edit adjustment ROOT ID --parameter NAME=JSON ...` | adds one closed non-destructive adjustment layer |
 | `edit adjustment-set ROOT LAYER ID ...` | replaces one adjustment through the same validation rules |
 | `edit mask ROOT LAYER MASK` | attaches or replaces a full-canvas editable foreground-alpha Y u8 mask |
+| `edit mask-paint ROOT LAYER MASK --before-sha256 SHA256` | commits a stale-checked full-mask paint result and exact sparse tile delta |
 | `edit mask-remove ROOT LAYER` | removes a mask without changing source pixels |
 | `edit layer ROOT LAYER ...` | changes checked visibility, opacity, blend mode or name fields |
 | `edit group`, `layer-move`, `layer-remove` | creates and explicitly restructures the layer tree |
@@ -78,7 +79,7 @@ by the release owner. The contained GUI is 0/1 delivered here and remains
 blocked on that selection. The `kilix-tui-utils` shell surface, the Kilix tab
 dispatch and the `kilix-content` catalog entry are 0/3 delivered here; each
 belongs to a repository this stream does not own. The toolkit-free project/edit
-path is delivered at 14/14 mutation verbs and every
+path is delivered at 15/15 mutation verbs and every
 successful mutation receives a 1/1 post-commit disk readback. Encoded image
 bytes and declared geometry/profile identities are stored without claiming a
 native decode; engine-backed rendering and export still require the profile
