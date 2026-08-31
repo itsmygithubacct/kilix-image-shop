@@ -649,6 +649,75 @@ class CommandMutationTests(CliHarness):
             self.assertIn("requires a raster selection", error)
             self.assertEqual(read_head(layout), before_refusal)
 
+    def test_pixel_stroke_result_is_revision_bound_and_refuses_stale_output(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            self.import_pixels(directory, root)
+            layout = ProjectLayout(root.resolve())
+            source_revision = open_project(
+                layout, default_project_limits()
+            ).generation.document.revision_id
+            output_payload = b"synthetic-completed-pixel-stroke"
+            output_path = directory / "painted.png"
+            output_path.write_bytes(output_payload)
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "pixel-stroke-result",
+                str(root),
+                str(output_path),
+                "--before-revision-id",
+                source_revision.value,
+                "--media-type",
+                "image/png",
+                "--width",
+                "64",
+                "--height",
+                "48",
+                "--profile-sha256",
+                "1" * 64,
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            result = json.loads(out)["result"]
+            output_id = ObjectId.from_bytes(output_payload)
+            self.assertEqual(result["sourceRevisionId"], source_revision.value)
+            self.assertTrue(result["sourceRevisionMatched"])
+            self.assertFalse(result["nativePainterCredited"])
+            self.assertEqual(result["outputAssetSha256"], output_id.value)
+            opened = open_project(layout, default_project_limits())
+            output_layer = opened.generation.document.layer_map[
+                LayerId(result["changedLayerIds"][0])
+            ]
+            self.assertEqual(output_layer.asset_digest, output_id)
+            accepted_head = read_head(layout)
+
+            stale_output = directory / "stale-painted.png"
+            stale_output.write_bytes(b"different-stale-pixel-stroke")
+            code, out, error = self.run_cli(
+                "edit",
+                "pixel-stroke-result",
+                str(root),
+                str(stale_output),
+                "--before-revision-id",
+                source_revision.value,
+                "--media-type",
+                "image/png",
+                "--width",
+                "64",
+                "--height",
+                "48",
+                "--profile-sha256",
+                "1" * 64,
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("source revision is stale", error)
+            self.assertEqual(read_head(layout), accepted_head)
+
     def test_editable_text_add_and_update_pin_font_objects_and_preview(self) -> None:
         import tempfile
 

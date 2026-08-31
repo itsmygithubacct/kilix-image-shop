@@ -186,6 +186,45 @@ def build_parser() -> argparse.ArgumentParser:
     import_asset.add_argument("--parent-id", default=None, help="optional group-layer UUID")
     import_asset.add_argument("--index", type=int, default=0, help="zero-based insertion index")
 
+    pixel_stroke_result = edit_verbs.add_parser(
+        "pixel-stroke-result",
+        parents=[limits],
+        help="commit a completed pixel-stroke carrier against its source revision",
+    )
+    pixel_stroke_result.add_argument("root", help="project root directory")
+    pixel_stroke_result.add_argument("carrier", help="encoded pixel-stroke output carrier")
+    pixel_stroke_result.add_argument(
+        "--before-revision-id",
+        required=True,
+        help="required source revision; stale results are refused",
+    )
+    pixel_stroke_result.add_argument(
+        "--media-type",
+        choices=tuple(item.value for item in MediaType),
+        required=True,
+        help="declared closed media type",
+    )
+    pixel_stroke_result.add_argument("--width", type=int, required=True, help="decoded width")
+    pixel_stroke_result.add_argument("--height", type=int, required=True, help="decoded height")
+    pixel_stroke_result.add_argument(
+        "--profile-sha256",
+        required=True,
+        help="embedded or assigned ICC profile content identity",
+    )
+    pixel_stroke_result.add_argument("--name", default="Paint stroke", help="layer name")
+    pixel_stroke_result.add_argument(
+        "--layer-id", default=None, help="canonical output UUID; generated if absent"
+    )
+    pixel_stroke_result.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+    pixel_stroke_result.add_argument(
+        "--parent-id", default=None, help="optional group-layer UUID"
+    )
+    pixel_stroke_result.add_argument(
+        "--index", type=int, default=0, help="zero-based insertion index"
+    )
+
     adjustment = edit_verbs.add_parser(
         "adjustment",
         parents=[limits],
@@ -542,6 +581,22 @@ def _dispatch(arguments: argparse.Namespace) -> commands.Outcome:
             return commands.edit_import_command(
                 arguments.root,
                 arguments.asset,
+                media_type_argument=arguments.media_type,
+                width=arguments.width,
+                height=arguments.height,
+                profile_argument=arguments.profile_sha256,
+                name=arguments.name,
+                layer_id_argument=arguments.layer_id,
+                revision_id_argument=arguments.revision_id,
+                parent_id_argument=arguments.parent_id,
+                index=arguments.index,
+                limits=limits,
+            )
+        if verb == "pixel-stroke-result":
+            return commands.edit_pixel_stroke_result_command(
+                arguments.root,
+                arguments.carrier,
+                before_revision_argument=arguments.before_revision_id,
                 media_type_argument=arguments.media_type,
                 width=arguments.width,
                 height=arguments.height,

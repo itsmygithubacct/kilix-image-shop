@@ -46,6 +46,7 @@ document revisions through the 12/12-point generation transaction:
 | `project recover ROOT GENERATION [--apply]` | previews, and only with `--apply` selects, another generation |
 | `project gc ROOT [--apply]` | previews, and only with `--apply` quarantines, unreachable objects |
 | `edit import ROOT ASSET ...` | copies a bounded encoded carrier into a new validated pixel layer and generation |
+| `edit pixel-stroke-result ROOT CARRIER --before-revision-id UUID ...` | commits a completed stroke carrier only against its exact source revision, with 0/1 native-painter credit |
 | `edit adjustment ROOT ID --parameter NAME=JSON ...` | adds one closed non-destructive adjustment layer |
 | `edit adjustment-set ROOT LAYER ID ...` | replaces one adjustment through the same validation rules |
 | `edit mask ROOT LAYER MASK` | attaches or replaces a full-canvas editable foreground-alpha Y u8 mask |
@@ -82,7 +83,7 @@ by the release owner. The contained GUI is 0/1 delivered here and remains
 blocked on that selection. The `kilix-tui-utils` shell surface, the Kilix tab
 dispatch and the `kilix-content` catalog entry are 0/3 delivered here; each
 belongs to a repository this stream does not own. The toolkit-free project/edit
-path is delivered at 19/19 mutation verbs and every
+path is delivered at 20/20 mutation verbs and every
 successful mutation receives a 1/1 post-commit disk readback. Encoded image
 bytes and declared geometry/profile identities are stored without claiming a
 native decode; engine-backed rendering and export still require the profile

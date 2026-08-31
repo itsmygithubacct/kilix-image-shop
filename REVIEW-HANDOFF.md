@@ -100,17 +100,19 @@ fakes may support a code verdict but receive 0/1 installed-H0 evidence credit.
 
 The command surface deliberately stops short of native pixel work. It carries
 0/1 rendered exports and 0/1 engine starts, while stored-document mutations are
-measured at 19/19 verbs with 12/12 causal controls. Creation/import, layer-tree,
-adjustment, mask attach/paint/remove/from-selection, editable text, supplied
-flatten results, transform, crop and selection commits all use validated
-commands, the 12/12 save transaction, 10/10 open validation classes and 1/1
-disk readback. Mask paint also binds 1/1 before identities, reports its exact
-sparse changed-tile
+measured at 20/20 verbs with 13/13 causal controls. Creation/import,
+revision-bound supplied pixel-stroke results, layer-tree, adjustment, mask
+attach/paint/remove/from-selection, editable text, supplied flatten results,
+transform, crop and selection commits all use validated commands, the 12/12
+save transaction, 10/10 open validation classes and 1/1 disk readback. Mask
+paint also binds 1/1 before identities, reports its exact sparse changed-tile
 population and preserves 0/1 HEAD changes for stale results and 0/4-tile no-op
 results. Text pins 1/1 copied font objects and declared previews. Flatten
 requires sibling sources and grants 0/1 native-renderer credit.
 Raster-selection masks reuse 1/1 stored objects, add 0/0 payloads and refuse
-vector selections with 0/1 HEAD changes. The contained
+vector selections with 0/1 HEAD changes.
+Pixel-stroke results bind 1/1 source revisions, grant 0/1 native-painter credit
+and refuse stale carriers with 0/1 HEAD changes. The contained
 GUI, TUI shell and Kilix tab dispatch remain outside this repository at their
 own gates.
 

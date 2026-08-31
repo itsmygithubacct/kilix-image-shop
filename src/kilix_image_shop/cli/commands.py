@@ -53,6 +53,7 @@ from kilix_image_shop.domain.layers import (
 )
 from kilix_image_shop.editing.adjustments import make_adjustment
 from kilix_image_shop.editing.masking import paint_mask
+from kilix_image_shop.editing.paint import pixel_stroke_layer_command
 from kilix_image_shop.editing.selection import selection_to_mask
 from kilix_image_shop.editing.text import (
     EditableText,
@@ -755,6 +756,83 @@ def edit_import_command(
         command,
         payloads={identity: payload},
         report_name="edit.import",
+    )
+
+
+def edit_pixel_stroke_result_command(
+    root_argument: str,
+    output_argument: str,
+    *,
+    before_revision_argument: str,
+    media_type_argument: str,
+    width: int,
+    height: int,
+    profile_argument: str,
+    name: str,
+    layer_id_argument: str | None,
+    revision_id_argument: str | None,
+    parent_id_argument: str | None,
+    index: int,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Commit one completed pixel-stroke carrier against its source revision."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    before_revision = _revision_id(before_revision_argument)
+    if before_revision != opened.generation.document.revision_id:
+        raise CommandError(
+            "pixel-stroke result source revision is stale",
+            ExitCode.INVALID_DATA,
+        )
+    output_source = _resolved_file(output_argument, "pixel-stroke output")
+    payload = _bounded_bytes(output_source, "pixel-stroke output", limits.max_object_bytes)
+    identity = ObjectId.from_bytes(payload)
+    try:
+        output_asset = AssetRef(
+            digest=identity,
+            byte_count=len(payload),
+            media_type=MediaType(media_type_argument),
+            width=width,
+            height=height,
+            profile_digest=_object_id(profile_argument, "pixel-stroke profile identity"),
+            import_policy=ImportPolicy.COPIED,
+        )
+        command = pixel_stroke_layer_command(
+            opened.generation.document,
+            new_revision=_revision_id(revision_id_argument),
+            output_asset=output_asset,
+            layer_id=_layer_id(layer_id_argument, "pixel-stroke output layer identity"),
+            name=name,
+            parent_id=_optional_layer_id(
+                parent_id_argument,
+                "pixel-stroke parent layer identity",
+            ),
+            index=index,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(
+            f"pixel-stroke-result arguments are invalid: {exc}",
+            ExitCode.USAGE,
+        ) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={identity: payload},
+        report_name="edit.pixel-stroke-result",
+        detail_rows=(
+            ("sourceRevisionMatched", counted(1, 1)),
+            ("nativePainterCredit", counted(0, 1)),
+        ),
+        detail_data={
+            "sourceRevisionId": before_revision.value,
+            "outputAssetSha256": identity.value,
+            "sourceRevisionMatched": True,
+            "nativePainterCredited": False,
+        },
     )
 
 
