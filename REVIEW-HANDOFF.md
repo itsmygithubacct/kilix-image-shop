@@ -28,14 +28,28 @@ git clone --branch work/0.2.1-f115 \
 
 The complete gate is expected to pass in that clone exactly as it does in the
 builder's working copy; the builder verified this on a fresh clone before
-handing the packet over. A clone legitimately has an `origin`, so the enforced
-invariant is that every configured fetch and push URL is that authorized
-private repository — not that no remote exists.
+handing the packet over. Authenticate with a credential helper or SSH agent;
+do not embed a bearer token in the remote URL. A clone legitimately has an
+`origin`, so the enforced invariant is that every configured fetch and push URL
+normalizes to that authorized private repository — not that no remote exists.
+Both HTTPS and scp-style SSH URLs may omit or include the trailing `.git`.
+
+Before reproduction, remove any credential-bearing clone URL and normalize the
+fetch and push destinations to one credential-free authorized spelling:
+
+~~~sh
+git remote set-url origin https://github.com/itsmygithubacct/kilix-image-shop.git
+git remote set-url --push origin https://github.com/itsmygithubacct/kilix-image-shop.git
+~~~
 
 ## Reproduction
 
-From the repository root, point `UV` at the release-pinned uv 0.12.5 binary and
-run:
+From the repository root, point `UV` at the release-pinned uv 0.12.5 binary.
+The complete gate also requires the release hygiene tool `hygiene-scan` on
+`PATH`; on this release host it is installed at `~/bin/hygiene-scan`, so prepend
+`~/bin` when it is not already present. If it is absent, the hygiene recipe
+exits 127; GNU Make reports `Error 127` and returns nonzero after printing
+`hygiene-scan not found on PATH; see REVIEW-HANDOFF.md`. Then run:
 
 ~~~sh
 git status --short
@@ -46,7 +60,7 @@ make UV=/path/to/release-pinned/uv check
 .venv/bin/kilix-image-shop doctor
 ~~~
 
-The builder's latest pre-review observation is 246/246 unit tests, 2/2 build
+The builder's latest pre-review observation is 247/247 unit tests, 2/2 build
 artifacts, 3/3 legal carriers, 5/5 aggregate phases, and 45/45 functional
 modules. The two command invocations are the installed console-script path:
 `version` exits 0, and `doctor` exits 3 on any host without the complete OD-7

@@ -2,8 +2,10 @@
 
 The repository contains the product-side OD-7 integration in 7/7 reviewable
 slices, the frozen I1 functional core in 45/45 modules, and the 5/5-module
-command surface. These are builder facts, not an independent verdict. Independent review remains PENDING at 0/1,
-owned by the independent reviewer designated by the release owner.
+command surface. These are builder facts, not an independent verdict. Exact-tree
+product review remains PENDING at 0/2 seats, owned by two eligible independent
+reviewers designated by the release owner. The 2/2 accepted publication-record
+seats graded the record, not this product or the F115 stream.
 
 ## Qualification-carrier verifier
 
@@ -37,7 +39,7 @@ records, installed-H0 behavior, or release admission.
 
 ## Local builder evidence
 
-The local aggregate gate covers 5/5 phases and currently reports 246/246 unit
+The local aggregate gate covers 5/5 phases and currently reports 247/247 unit
 tests, 2/2 distribution artifacts, and 3/3 legal carriers. The wheel installs
 1/1 console script, `kilix-image-shop`, whose readiness verb exits non-zero
 until the complete OD-7 package group is installed. The exact committed
@@ -86,8 +88,9 @@ The 15/15 acceptance-suite rows and review instructions are mapped in
   release root after the G5b return.
 - Generation-provider round trip: BLOCKED at 0/1, owned by the release root,
   Track G, and the F115 owner.
-- Independent repository review: PENDING at 0/1, owned by the independent
-  reviewer designated by the release owner.
+- Exact-tree product review: PENDING at 0/2 seats, owned by two eligible
+  independent reviewers designated by the release owner. Publication-record
+  acceptance contributes 0/2 product-review seats.
 - Provider refusals received by this repository session: 0/0.
 
 Synthetic unit carriers receive 0/1 release-evidence credit. Retained extracted

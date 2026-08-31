@@ -1,6 +1,4 @@
 UV ?= uv
-AUTHORIZED_REMOTE_HTTPS := https://github.com/itsmygithubacct/kilix-image-shop.git
-AUTHORIZED_REMOTE_SSH := git@github.com:itsmygithubacct/kilix-image-shop.git
 UV_RELEASE_VERSION := uv 0.12.5 (x86_64-unknown-linux-gnu)
 UV_RELEASE_SHA256 := b65f23a420c4acc96427efb30e5ed9bc0f7e25d2d712000f6ede77c1a0de5f46
 SYSTEM_PYTHON := /usr/bin/python3
@@ -60,17 +58,13 @@ legal-check: build
 
 hygiene-check:
 	@set -eu; \
-	for remote in $$(git remote); do \
-		for url in $$(git remote get-url --all "$$remote") \
-			$$(git remote get-url --push --all "$$remote"); do \
-			case "$$url" in \
-			$(AUTHORIZED_REMOTE_HTTPS)|$(AUTHORIZED_REMOTE_SSH)) ;; \
-			*) printf 'unauthorized remote URL on %s\n' "$$remote" >&2; exit 1;; \
-			esac; \
-		done; \
-	done; \
+	$(SYSTEM_PYTHON) -I tools/check_remote_urls.py; \
 	for path in $(BIRTH_PATHS); do git ls-files --error-unmatch "$$path" >/dev/null; done; \
 	if git rev-parse --verify HEAD >/dev/null 2>&1; then \
+		command -v hygiene-scan >/dev/null 2>&1 || { \
+			printf '%s\n' 'hygiene-scan not found on PATH; see REVIEW-HANDOFF.md' >&2; \
+			exit 127; \
+		}; \
 		hygiene-scan; \
 	else \
 		git diff --cached --check; \

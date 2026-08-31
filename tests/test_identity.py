@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import pathlib
 import subprocess
 import tomllib
@@ -27,6 +28,16 @@ BIRTH_PATHS = {
     "tests/test_identity.py",
     "uv.lock",
 }
+
+
+def load_remote_checker():
+    path = ROOT / "tools" / "check_remote_urls.py"
+    spec = importlib.util.spec_from_file_location("check_remote_urls", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("remote checker could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def git(*args: str) -> str:
@@ -97,6 +108,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_publication_boundary_is_private_work_refs_only(self) -> None:
         publication = (ROOT / "PUBLICATION.md").read_text().lower()
+        handoff = (ROOT / "REVIEW-HANDOFF.md").read_text()
         for authorized in ("private", "work/*", "archive/*"):
             self.assertIn(authorized, publication)
         for reserved in (
@@ -108,17 +120,34 @@ class IdentityTests(unittest.TestCase):
             "release-pin",
         ):
             self.assertIn(reserved, publication)
+        self.assertIn("hygiene-scan", handoff)
+        self.assertIn("git remote set-url origin", handoff)
 
     def test_every_configured_remote_is_the_authorized_private_repository(self) -> None:
-        authorized = {
+        checker = load_remote_checker()
+        authorized = (
             "https://github.com/itsmygithubacct/kilix-image-shop.git",
+            "https://github.com/itsmygithubacct/kilix-image-shop",
             "git@github.com:itsmygithubacct/kilix-image-shop.git",
-        }
+            "git@github.com:itsmygithubacct/kilix-image-shop",
+        )
+        refused = (
+            "https://github.com/itsmygithubacct/kilix-image-shop-fork.git",
+            "https://example.com/itsmygithubacct/kilix-image-shop.git",
+            "https://token@github.com/itsmygithubacct/kilix-image-shop.git",
+            "https://github.com/itsmygithubacct/kilix-image-shop.git?mirror=1",
+            "git@github.com:someone-else/kilix-image-shop.git",
+        )
+        self.assertTrue(all(checker.is_authorized_remote_url(url) for url in authorized))
+        self.assertTrue(all(not checker.is_authorized_remote_url(url) for url in refused))
         for remote in git("remote").split():
             urls = set(git("remote", "get-url", "--all", remote).split())
             urls.update(git("remote", "get-url", "--push", "--all", remote).split())
             self.assertTrue(urls, remote)
-            self.assertTrue(urls <= authorized, f"{remote}: {sorted(urls - authorized)}")
+            self.assertTrue(
+                all(checker.is_authorized_remote_url(url) for url in urls),
+                remote,
+            )
 
     def test_tracked_manifest_retains_the_exact_birth_surface(self) -> None:
         tracked = set(git("ls-files").splitlines())

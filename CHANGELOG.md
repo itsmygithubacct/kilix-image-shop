@@ -36,3 +36,10 @@
   refs to one private remote, published by explicit URL with 0/0 configured
   remotes. Pushes to `main`, tags, force-pushes, history rewrites and visibility
   changes remain refused at 0/5.
+- Apply all 5/5 Low publication-review findings through 3/3 causal corrections:
+  keep the test denominator at 247/247, normalize 4/4 credential-free authorized
+  remote spellings while refusing 5/5 hostile variants without printing them,
+  document private-clone URL normalization, and name the 1/1 external hygiene
+  prerequisite with its exit-127 failure mode. Publication-record acceptance
+  remains distinct from exact-tree product review at 0/2 seats and F115 stream
+  acceptance at 0/1.

@@ -32,7 +32,11 @@ an explicit URL at push time, so no ambient remote exists that an unrelated
 command could push to by accident.
 
 A reviewer's clone necessarily has one. The enforced invariant is therefore not
-"no remote" but **every configured fetch and push URL is the authorized private
-repository** — `https://github.com/itsmygithubacct/kilix-image-shop.git` or its
-SSH form. A mirror, a fork or any other host fails the hygiene phase of
-`make check` and the identity suite, in the working copy and in a clone alike.
+"no remote" but **every configured fetch and push URL normalizes to the
+authorized private repository**. Credential-free HTTPS and scp-style SSH forms
+are accepted with or without a trailing `.git`; userinfo, credentials, query
+strings, fragments, mirrors, forks and other hosts are refused. An authenticated
+clone that temporarily records credentials in `origin` must normalize both URLs
+as documented in `REVIEW-HANDOFF.md` before running the gate. A refused remote
+fails the hygiene phase of `make check` and the identity suite in the working
+copy and in a clone alike, without echoing the possibly secret URL.
