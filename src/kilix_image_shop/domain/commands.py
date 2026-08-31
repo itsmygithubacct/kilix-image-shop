@@ -330,6 +330,8 @@ def _replace_children(
     parent_id: LayerId | None,
     children: tuple[LayerId, ...],
     layers: dict[LayerId, Layer],
+    *,
+    roots: tuple[LayerId, ...] | None = None,
 ) -> tuple[LayerId, ...]:
     if parent_id is None:
         return children
@@ -337,7 +339,7 @@ def _replace_children(
     if not isinstance(parent, GroupLayer):
         raise CommandValidationError("target parent is not a group")
     layers[parent_id] = replace(parent, child_layer_ids=children)
-    return state.root_layer_ids
+    return state.root_layer_ids if roots is None else roots
 
 
 def _known_object_ids(state: DocumentState) -> set[ObjectId]:
@@ -574,7 +576,13 @@ def reduce_command(
             target = parent.child_layer_ids
         position = _index(command.index, len(target))
         target = target[:position] + (command.layer_id,) + target[position:]
-        roots = _replace_children(state, command.parent_id, target, layers)
+        roots = _replace_children(
+            state,
+            command.parent_id,
+            target,
+            layers,
+            roots=roots,
+        )
         candidate = _document(state, command.new_revision, layers=layers, roots=roots)
         changed = (command.layer_id,)
 

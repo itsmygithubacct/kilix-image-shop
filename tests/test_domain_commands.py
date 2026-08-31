@@ -150,6 +150,39 @@ class LayerStructureCommandTests(unittest.TestCase):
         )
         self.assertNotIn(added.layer_id, removed.state.layer_map)
 
+    def test_reorder_preserves_the_updated_root_table_across_group_boundaries(self) -> None:
+        state = sample_document()
+        moved_to_root = reduce_command(
+            state,
+            ReorderLayer(
+                expected_revision=state.revision_id,
+                new_revision=revision(1),
+                layer_id=layer_id(1),
+                parent_id=None,
+                index=1,
+            ),
+        )
+        self.assertEqual(
+            moved_to_root.state.root_layer_ids,
+            (layer_id(4), layer_id(1)),
+        )
+        group = moved_to_root.state.layer_map[layer_id(4)]
+        self.assertNotIn(layer_id(1), group.child_layer_ids)  # type: ignore[union-attr]
+
+        moved_to_group = reduce_command(
+            moved_to_root.state,
+            ReorderLayer(
+                expected_revision=moved_to_root.state.revision_id,
+                new_revision=revision(2),
+                layer_id=layer_id(1),
+                parent_id=layer_id(4),
+                index=0,
+            ),
+        )
+        self.assertEqual(moved_to_group.state.root_layer_ids, (layer_id(4),))
+        group = moved_to_group.state.layer_map[layer_id(4)]
+        self.assertEqual(group.child_layer_ids.count(layer_id(1)), 1)  # type: ignore[union-attr]
+
     def test_nonempty_group_requires_explicit_recursive_remove(self) -> None:
         state = sample_document()
         with self.assertRaises(CommandValidationError):

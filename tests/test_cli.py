@@ -537,6 +537,203 @@ class CommandMutationTests(CliHarness):
                 5,
             )
 
+    def test_remaining_structural_edits_commit_through_the_same_transaction(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            pixel_id = self.import_pixels(directory, root)
+
+            code, out, error = self.run_cli(
+                "--output", "json", "edit", "group", str(root), "--index", "1"
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            group_id = json.loads(out)["result"]["changedLayerIds"][0]
+
+            code, _, error = self.run_cli(
+                "edit",
+                "layer-move",
+                str(root),
+                pixel_id,
+                "--parent-id",
+                group_id,
+                "--index",
+                "0",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+
+            code, _, error = self.run_cli(
+                "edit",
+                "transform",
+                str(root),
+                pixel_id,
+                "1",
+                "0",
+                "0",
+                "1",
+                "4",
+                "8",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "adjustment",
+                str(root),
+                "exposure",
+                "--parameter",
+                "stops=0.5",
+                "--parent-id",
+                group_id,
+                "--index",
+                "1",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            adjustment_id = json.loads(out)["result"]["changedLayerIds"][0]
+
+            code, _, error = self.run_cli(
+                "edit",
+                "adjustment-set",
+                str(root),
+                adjustment_id,
+                "contrast",
+                "--parameter",
+                "amount=1.5",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+
+            mask_path = directory / "mask.y8"
+            mask_path.write_bytes(bytes([192]) * (64 * 48))
+            code, _, error = self.run_cli(
+                "edit", "mask", str(root), pixel_id, str(mask_path)
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            code, _, error = self.run_cli(
+                "edit", "mask-remove", str(root), pixel_id
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+
+            selection_path = directory / "selection.y8"
+            selection_path.write_bytes(bytes([255]) * 100)
+            code, _, error = self.run_cli(
+                "edit",
+                "selection",
+                str(root),
+                str(selection_path),
+                "--kind",
+                "raster",
+                "--x",
+                "1",
+                "--y",
+                "1",
+                "--width",
+                "10",
+                "--height",
+                "10",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+
+            code, _, error = self.run_cli(
+                "edit", "crop", str(root), "--width", "32", "--height", "32"
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            code, _, error = self.run_cli("edit", "selection-clear", str(root))
+            self.assertEqual(code, int(ExitCode.OK), error)
+            code, _, error = self.run_cli(
+                "edit", "layer-remove", str(root), adjustment_id
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+
+            opened = open_project(
+                ProjectLayout(root.resolve()), default_project_limits()
+            )
+            document = opened.generation.document
+            self.assertEqual(document.canvas, Canvas(32, 32))
+            self.assertIsNone(document.selection)
+            self.assertEqual(len(document.layers), 2)
+            self.assertEqual(document.root_layer_ids, (LayerId(group_id),))
+            group = document.layer_map[LayerId(group_id)]
+            self.assertEqual(group.child_layer_ids, (LayerId(pixel_id),))
+            pixel = document.layer_map[LayerId(pixel_id)]
+            self.assertEqual(pixel.transform.e, 4.0)
+            self.assertEqual(pixel.transform.f, 8.0)
+            self.assertIsNone(pixel.mask)
+            self.assertEqual(
+                len(list_recovery_candidates(ProjectLayout(root.resolve()))),
+                13,
+            )
+
+    def test_nonempty_group_remove_refusal_changes_zero_heads(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            pixel_id = self.import_pixels(directory, root)
+            code, out, error = self.run_cli(
+                "--output", "json", "edit", "group", str(root), "--index", "1"
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            group_id = json.loads(out)["result"]["changedLayerIds"][0]
+            code, _, error = self.run_cli(
+                "edit",
+                "layer-move",
+                str(root),
+                pixel_id,
+                "--parent-id",
+                group_id,
+                "--index",
+                "0",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            layout = ProjectLayout(root.resolve())
+            before = read_head(layout)
+            code, out, error = self.run_cli(
+                "edit", "layer-remove", str(root), group_id
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("recursive", error)
+            self.assertEqual(read_head(layout), before)
+
+    def test_crop_outside_active_selection_changes_zero_heads(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            selection_path = directory / "selection.y8"
+            selection_path.write_bytes(bytes([255]) * 64)
+            code, _, error = self.run_cli(
+                "edit",
+                "selection",
+                str(root),
+                str(selection_path),
+                "--kind",
+                "raster",
+                "--x",
+                "56",
+                "--y",
+                "40",
+                "--width",
+                "8",
+                "--height",
+                "8",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            layout = ProjectLayout(root.resolve())
+            before = read_head(layout)
+            code, out, error = self.run_cli(
+                "edit", "crop", str(root), "--width", "32", "--height", "32"
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("selection", error)
+            self.assertEqual(read_head(layout), before)
+
     def test_invalid_mask_changes_zero_heads_or_generations(self) -> None:
         import tempfile
 

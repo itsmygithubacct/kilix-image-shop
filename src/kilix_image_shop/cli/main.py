@@ -214,6 +214,134 @@ def build_parser() -> argparse.ArgumentParser:
         help="closed blend mode",
     )
 
+    group = edit_verbs.add_parser(
+        "group",
+        parents=[limits],
+        help="add one empty editable group",
+    )
+    group.add_argument("root", help="project root directory")
+    group.add_argument("--name", default="Group", help="layer name")
+    group.add_argument("--layer-id", default=None, help="canonical UUID; generated if absent")
+    group.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
+    group.add_argument("--parent-id", default=None, help="optional group-layer UUID")
+    group.add_argument("--index", type=int, default=0, help="zero-based insertion index")
+
+    adjustment_set = edit_verbs.add_parser(
+        "adjustment-set",
+        parents=[limits],
+        help="replace an existing adjustment layer's parameters",
+    )
+    adjustment_set.add_argument("root", help="project root directory")
+    adjustment_set.add_argument("layer", help="target adjustment-layer UUID")
+    adjustment_set.add_argument(
+        "adjustment",
+        choices=tuple(item.value for item in AdjustmentId),
+        help="closed adjustment identity",
+    )
+    adjustment_set.add_argument(
+        "--parameter",
+        action="append",
+        default=[],
+        metavar="NAME=JSON",
+        help="repeat for every required adjustment parameter",
+    )
+    adjustment_set.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
+    mask_remove = edit_verbs.add_parser(
+        "mask-remove",
+        parents=[limits],
+        help="remove one existing editable layer mask",
+    )
+    mask_remove.add_argument("root", help="project root directory")
+    mask_remove.add_argument("layer", help="target layer UUID")
+    mask_remove.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
+    layer_remove = edit_verbs.add_parser(
+        "layer-remove",
+        parents=[limits],
+        help="remove one layer; non-empty groups require --recursive",
+    )
+    layer_remove.add_argument("root", help="project root directory")
+    layer_remove.add_argument("layer", help="target layer UUID")
+    layer_remove.add_argument("--recursive", action="store_true", help="also remove descendants")
+    layer_remove.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
+    layer_move = edit_verbs.add_parser(
+        "layer-move",
+        parents=[limits],
+        help="move one layer to an exact root/group position",
+    )
+    layer_move.add_argument("root", help="project root directory")
+    layer_move.add_argument("layer", help="target layer UUID")
+    layer_move.add_argument("--parent-id", default=None, help="optional target group UUID")
+    layer_move.add_argument("--index", type=int, required=True, help="zero-based insertion index")
+    layer_move.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
+    transform = edit_verbs.add_parser(
+        "transform",
+        parents=[limits],
+        help="replace one checked affine layer transform",
+    )
+    transform.add_argument("root", help="project root directory")
+    transform.add_argument("layer", help="target pixel, text or group layer UUID")
+    transform.add_argument("a", type=float)
+    transform.add_argument("b", type=float)
+    transform.add_argument("c", type=float)
+    transform.add_argument("d", type=float)
+    transform.add_argument("e", type=float)
+    transform.add_argument("f", type=float)
+    transform.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
+    crop = edit_verbs.add_parser(
+        "crop",
+        parents=[limits],
+        help="replace checked canvas geometry without resampling layers",
+    )
+    crop.add_argument("root", help="project root directory")
+    crop.add_argument("--origin-x", type=int, default=0)
+    crop.add_argument("--origin-y", type=int, default=0)
+    crop.add_argument("--width", type=int, required=True)
+    crop.add_argument("--height", type=int, required=True)
+    crop.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
+
+    selection = edit_verbs.add_parser(
+        "selection",
+        parents=[limits],
+        help="set one bounded vector or raster selection object",
+    )
+    selection.add_argument("root", help="project root directory")
+    selection.add_argument("selection", help="selection object carrier")
+    selection.add_argument(
+        "--kind", choices=("vector", "raster"), required=True, help="closed selection kind"
+    )
+    selection.add_argument("--x", type=int, required=True)
+    selection.add_argument("--y", type=int, required=True)
+    selection.add_argument("--width", type=int, required=True)
+    selection.add_argument("--height", type=int, required=True)
+    selection.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
+    selection_clear = edit_verbs.add_parser(
+        "selection-clear",
+        parents=[limits],
+        help="clear one existing selection",
+    )
+    selection_clear.add_argument("root", help="project root directory")
+    selection_clear.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
     ops = groups.add_parser("ops", help="report the operation substrate")
     ops_verbs = ops.add_subparsers(dest="verb")
     ops_verbs.add_parser("providers", help="report installed operation providers")
@@ -343,6 +471,92 @@ def _dispatch(arguments: argparse.Namespace) -> commands.Outcome:
                 visible=arguments.visible,
                 opacity_u16=arguments.opacity_u16,
                 blend_mode_argument=arguments.blend_mode,
+                limits=limits,
+            )
+        if verb == "group":
+            return commands.edit_group_command(
+                arguments.root,
+                name=arguments.name,
+                layer_id_argument=arguments.layer_id,
+                revision_id_argument=arguments.revision_id,
+                parent_id_argument=arguments.parent_id,
+                index=arguments.index,
+                limits=limits,
+            )
+        if verb == "adjustment-set":
+            return commands.edit_adjustment_set_command(
+                arguments.root,
+                arguments.layer,
+                arguments.adjustment,
+                parameter_arguments=tuple(arguments.parameter),
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "mask-remove":
+            return commands.edit_mask_remove_command(
+                arguments.root,
+                arguments.layer,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "layer-remove":
+            return commands.edit_layer_remove_command(
+                arguments.root,
+                arguments.layer,
+                recursive=arguments.recursive,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "layer-move":
+            return commands.edit_layer_move_command(
+                arguments.root,
+                arguments.layer,
+                parent_id_argument=arguments.parent_id,
+                index=arguments.index,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "transform":
+            return commands.edit_transform_command(
+                arguments.root,
+                arguments.layer,
+                (
+                    arguments.a,
+                    arguments.b,
+                    arguments.c,
+                    arguments.d,
+                    arguments.e,
+                    arguments.f,
+                ),
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "crop":
+            return commands.edit_crop_command(
+                arguments.root,
+                origin_x=arguments.origin_x,
+                origin_y=arguments.origin_y,
+                width=arguments.width,
+                height=arguments.height,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "selection":
+            return commands.edit_selection_command(
+                arguments.root,
+                arguments.selection,
+                kind_argument=arguments.kind,
+                x=arguments.x,
+                y=arguments.y,
+                width=arguments.width,
+                height=arguments.height,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "selection-clear":
+            return commands.edit_selection_clear_command(
+                arguments.root,
+                revision_id_argument=arguments.revision_id,
                 limits=limits,
             )
     if group == "ops":

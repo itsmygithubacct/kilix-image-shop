@@ -27,17 +27,20 @@
   generation listing, previewed recovery and collection, the operation registry
   and diagnostic catalogue, deterministic preset binding, and sidecar
   verification, with a 5/5 closed exit-status set and canonical JSON output.
-- Ship 5/5 toolkit-free project/edit verbs: atomic empty-project creation,
-  bounded encoded-carrier import, non-destructive adjustment insertion,
-  full-canvas editable foreground-alpha mask attachment/replacement, and common
-  layer-property mutation. Every successful mutation runs the 12/12 save
-  transaction, all 10/10 open validation classes, and 1/1 post-commit disk
-  readback; malformed mask/adjustment controls preserve 0/1 changed HEAD values.
+- Ship 14/14 toolkit-free project/edit mutation verbs: project create/import;
+  group, move, remove and common layer changes; adjustment add/replace; mask
+  attach/replace/remove; affine transform; canvas crop; and selection set/clear.
+  Every successful mutation runs the 12/12 save transaction, all 10/10 open
+  validation classes, and 1/1 post-commit disk readback; 8/8 causal controls
+  cover the complete flow and fail-closed cases.
+- Fix the root-to-group reorder reducer so its updated root table survives the
+  second parent update. The control observed the invalid root-plus-child state
+  before the fix and now covers both 2/2 cross-boundary directions.
 - Move the frozen total functional implementation population from 40/40 to
   45/45 modules and the acceptance-suite map from 14/14 to 15/15.
 - Retain 0/2 production provider adapters and 0/1 GUI toolkit selections until
   their separately owned gates open. The command surface commits document
-  mutations at 5/5 verbs but renders 0/1 pixels; native rendering waits on the
+  mutations at 14/14 verbs but renders 0/1 pixels; native rendering waits on the
   gates recorded in `QUALIFICATION.md`.
 - Record the publication boundary the owner authorized: `work/*` and `archive/*`
   refs to one private remote, published by explicit URL with 0/0 configured

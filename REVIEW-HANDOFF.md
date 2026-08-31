@@ -60,7 +60,7 @@ make UV=/path/to/release-pinned/uv check
 .venv/bin/kilix-image-shop doctor
 ~~~
 
-The builder's latest pre-review observation is 251/251 unit tests, 2/2 build
+The builder's latest pre-review observation is 255/255 unit tests, 2/2 build
 artifacts, 3/3 legal carriers, 5/5 aggregate phases, and 45/45 functional
 modules. The two command invocations are the installed console-script path:
 `version` exits 0, and `doctor` exits 3 on any host without the complete OD-7
@@ -99,10 +99,11 @@ fakes may support a code verdict but receive 0/1 installed-H0 evidence credit.
 
 The command surface deliberately stops short of native pixel work. It carries
 0/1 rendered exports and 0/1 engine starts, while stored-document mutations are
-measured at 5/5 verbs with 4/4 causal controls. Create/import/adjust/mask/layer
-commits all use validated commands, the 12/12 save transaction, 10/10 open
-validation classes and 1/1 disk readback. The contained GUI, TUI shell and Kilix
-tab dispatch remain outside this repository at their own gates.
+measured at 14/14 verbs with 8/8 causal controls. Creation/import, layer-tree,
+adjustment, mask, transform, crop and selection commits all use validated
+commands, the 12/12 save transaction, 10/10 open validation classes and 1/1
+disk readback. The contained GUI, TUI shell and Kilix tab dispatch remain
+outside this repository at their own gates.
 
 ## Required independent disposition
 

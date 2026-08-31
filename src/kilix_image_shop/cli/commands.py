@@ -13,14 +13,20 @@ from kilix_image_shop.domain.color import ColourSpace, ColourState, EngineCompat
 from kilix_image_shop.domain.commands import (
     AddLayer,
     AttachMask,
+    ChangeAdjustment,
+    CropCanvas,
     ImportAsset,
+    RemoveLayer,
+    ReorderLayer,
     ReductionContext,
     ResolvedObject,
     SetLayerProperty,
+    SetSelection,
+    SetTransform,
     reduce_command,
 )
 from kilix_image_shop.domain.document import PROJECT_SCHEMA, DocumentState
-from kilix_image_shop.domain.geometry import Canvas
+from kilix_image_shop.domain.geometry import AffineTransform, Canvas, Rect
 from kilix_image_shop.domain.identifiers import (
     DocumentId,
     DomainValidationError,
@@ -36,6 +42,8 @@ from kilix_image_shop.domain.layers import (
     MaskObject,
     MaskSource,
     PixelLayer,
+    Selection,
+    SelectionKind,
     TextLayer,
 )
 from kilix_image_shop.editing.adjustments import make_adjustment
@@ -805,6 +813,323 @@ def edit_layer_command(
     )
 
 
+def edit_group_command(
+    root_argument: str,
+    *,
+    name: str,
+    layer_id_argument: str | None,
+    revision_id_argument: str | None,
+    parent_id_argument: str | None,
+    index: int,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Add one empty editable group without moving existing layers implicitly."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    try:
+        layer = GroupLayer(
+            layer_id=_layer_id(layer_id_argument),
+            name=name,
+            child_layer_ids=(),
+        )
+        command = AddLayer(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer=layer,
+            parent_id=_optional_layer_id(parent_id_argument, "parent layer identity"),
+            index=index,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"group arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.group",
+    )
+
+
+def edit_adjustment_set_command(
+    root_argument: str,
+    layer_id_argument: str,
+    adjustment_argument: str,
+    *,
+    parameter_arguments: tuple[str, ...],
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Replace the parameters of one existing adjustment layer."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    try:
+        adjustment = make_adjustment(
+            AdjustmentId(adjustment_argument),
+            _parameter_map(parameter_arguments),
+        )
+        command = ChangeAdjustment(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=_layer_id(layer_id_argument),
+            adjustment=adjustment,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"adjustment arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.adjustment-set",
+    )
+
+
+def edit_mask_remove_command(
+    root_argument: str,
+    layer_id_argument: str,
+    *,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Remove one existing mask without changing its source layer pixels."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    document = opened.generation.document
+    try:
+        layer_id = _layer_id(layer_id_argument)
+        layer = document.layer_map.get(layer_id)
+        if layer is None or getattr(layer, "mask", None) is None:
+            raise CommandError("mask target has no mask", ExitCode.INVALID_DATA)
+        command = AttachMask(
+            expected_revision=document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=layer_id,
+            mask=None,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"mask arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.mask-remove",
+    )
+
+
+def edit_layer_remove_command(
+    root_argument: str,
+    layer_id_argument: str,
+    *,
+    recursive: bool,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Remove one layer; non-empty groups require explicit recursive authority."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    try:
+        command = RemoveLayer(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=_layer_id(layer_id_argument),
+            recursive=recursive,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"layer arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.layer-remove",
+    )
+
+
+def edit_layer_move_command(
+    root_argument: str,
+    layer_id_argument: str,
+    *,
+    parent_id_argument: str | None,
+    index: int,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Move one layer to an exact root/group position."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    try:
+        command = ReorderLayer(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=_layer_id(layer_id_argument),
+            parent_id=_optional_layer_id(parent_id_argument, "parent layer identity"),
+            index=index,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"layer arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.layer-move",
+    )
+
+
+def edit_transform_command(
+    root_argument: str,
+    layer_id_argument: str,
+    coefficients: tuple[float, float, float, float, float, float],
+    *,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Replace one layer's checked affine transform."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    try:
+        command = SetTransform(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=_layer_id(layer_id_argument),
+            transform=AffineTransform(*coefficients),
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"transform arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.transform",
+    )
+
+
+def edit_crop_command(
+    root_argument: str,
+    *,
+    origin_x: int,
+    origin_y: int,
+    width: int,
+    height: int,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Replace checked canvas geometry without resampling layer pixels."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    try:
+        command = CropCanvas(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            canvas=Canvas(width, height, origin_x, origin_y),
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"crop arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.crop",
+    )
+
+
+def edit_selection_command(
+    root_argument: str,
+    selection_argument: str,
+    *,
+    kind_argument: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Set one bounded vector or raster selection object."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    source = _resolved_file(selection_argument, "selection")
+    payload = _bounded_bytes(source, "selection", limits.max_object_bytes)
+    if not payload:
+        raise CommandError("selection object is empty", ExitCode.INVALID_DATA)
+    identity = ObjectId.from_bytes(payload)
+    try:
+        kind = SelectionKind(kind_argument)
+        bounds = Rect(x, y, width, height)
+        if kind is SelectionKind.RASTER and len(payload) != width * height:
+            raise CommandError(
+                "raster selection bytes differ from its Y u8 bounds",
+                ExitCode.INVALID_DATA,
+            )
+        command = SetSelection(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            selection=Selection(kind, identity, bounds),
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"selection arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={identity: payload},
+        report_name="edit.selection",
+    )
+
+
+def edit_selection_clear_command(
+    root_argument: str,
+    *,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Clear one existing selection through a new immutable revision."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    if opened.generation.document.selection is None:
+        raise CommandError("document has no selection", ExitCode.INVALID_DATA)
+    command = SetSelection(
+        expected_revision=opened.generation.document.revision_id,
+        new_revision=_revision_id(revision_id_argument),
+        selection=None,
+    )
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={},
+        report_name="edit.selection-clear",
+    )
+
+
 def project_verify_command(root_argument: str, limits: ProjectLimits) -> Outcome:
     """Re-read and re-digest every object the current generation depends on."""
 
@@ -1185,9 +1510,18 @@ __all__ = (
     "Outcome",
     "doctor_command",
     "edit_adjustment_command",
+    "edit_adjustment_set_command",
+    "edit_crop_command",
+    "edit_group_command",
     "edit_import_command",
     "edit_layer_command",
+    "edit_layer_move_command",
+    "edit_layer_remove_command",
     "edit_mask_command",
+    "edit_mask_remove_command",
+    "edit_selection_clear_command",
+    "edit_selection_command",
+    "edit_transform_command",
     "export_preset_command",
     "export_verify_command",
     "ops_diagnostics_command",
