@@ -1,12 +1,13 @@
 # Independent review handoff
 
 This packet makes the local F115 core independently reviewable without asking
-the builder to grade its own work. Review status is PENDING at 0/1. The owner of
-the verdict is an independent reviewer designated by the release owner.
+the builder to grade its own work. Because the target is published, review
+status is PENDING at 0/2 seats. The owners of the verdict are 2/2 genuinely
+independent eligible reviewers designated by the release owner.
 
 ## Target capture
 
-The reviewer records all 4/4 target fields before review:
+Each of the 2/2 reviewers records all 4/4 target fields before review:
 
 - reviewer identity: PENDING, 0/1;
 - reviewed commit ID: PENDING, 0/1;
@@ -107,7 +108,7 @@ outside this repository at their own gates.
 
 ## Required independent disposition
 
-The independent reviewer supplies all 5/5 disposition fields:
+Each independent reviewer supplies all 5/5 disposition fields:
 
 1. `1/5` reviewed commit and tree identities;
 2. `2/5` fresh command transcript with a denominator on every count;
@@ -116,5 +117,6 @@ The independent reviewer supplies all 5/5 disposition fields:
 5. `5/5` explicit confirmation that external blocked gates received 0/1 local
    pass credit.
 
-Until those 5/5 fields exist, independent review remains 0/1 and this
-repository makes no release-admission claim.
+Until both 2/2 seats return all 5/5 fields against the same commit and tree,
+independent review remains 0/2 and this repository makes no release-admission
+claim.

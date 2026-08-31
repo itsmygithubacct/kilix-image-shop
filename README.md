@@ -74,10 +74,11 @@ qualification credit.
 
 Local core materialization covers slices 1/8 through 7/8. Slice 8/8, the Kilix
 tab surface and toolkit adapters, is BLOCKED at 0/1 toolkit selections, owned
-by the release owner. The contained GUI, the `kilix-tui-utils` shell surface,
-the Kilix tab dispatch and the `kilix-content` catalog entry are 0/4 delivered
-here; each belongs to a repository this stream does not own. The toolkit-free
-toolkit-free project/edit path is delivered at 14/14 mutation verbs and every
+by the release owner. The contained GUI is 0/1 delivered here and remains
+blocked on that selection. The `kilix-tui-utils` shell surface, the Kilix tab
+dispatch and the `kilix-content` catalog entry are 0/3 delivered here; each
+belongs to a repository this stream does not own. The toolkit-free project/edit
+path is delivered at 14/14 mutation verbs and every
 successful mutation receives a 1/1 post-commit disk readback. Encoded image
 bytes and declared geometry/profile identities are stored without claiming a
 native decode; engine-backed rendering and export still require the profile
