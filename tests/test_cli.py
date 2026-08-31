@@ -29,7 +29,12 @@ from kilix_image_shop.domain.assets import AssetRef, ImportPolicy, MediaType
 from kilix_image_shop.domain.document import PROJECT_SCHEMA, DocumentState
 from kilix_image_shop.domain.geometry import Canvas
 from kilix_image_shop.domain.identifiers import DocumentId, LayerId, ObjectId, RevisionId
-from kilix_image_shop.domain.layers import MaskSource, PixelLayer, TextLayer
+from kilix_image_shop.domain.layers import (
+    MaskSource,
+    PixelLayer,
+    SelectionKind,
+    TextLayer,
+)
 from kilix_image_shop.export.presets import ExportFormat, ExportPreset, deterministic_preset
 from kilix_image_shop.export.provenance import ExportArtifact, ExportProvenance
 from kilix_image_shop.store.generations import GenerationStore, create_project
@@ -648,6 +653,116 @@ class CommandMutationTests(CliHarness):
             self.assertEqual(out, "")
             self.assertIn("requires a raster selection", error)
             self.assertEqual(read_head(layout), before_refusal)
+
+    def test_vector_selection_raster_result_is_stale_checked_and_mask_ready(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            pixel_id = self.import_pixels(directory, root)
+            first_vector_payload = b"first-vector-selection"
+            first_vector_path = directory / "first.vector"
+            first_vector_path.write_bytes(first_vector_payload)
+            code, _, error = self.run_cli(
+                "edit",
+                "selection",
+                str(root),
+                str(first_vector_path),
+                "--kind",
+                "vector",
+                "--x",
+                "2",
+                "--y",
+                "3",
+                "--width",
+                "4",
+                "--height",
+                "3",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            first_vector_id = ObjectId.from_bytes(first_vector_payload)
+
+            second_vector_payload = b"second-vector-selection"
+            second_vector_path = directory / "second.vector"
+            second_vector_path.write_bytes(second_vector_payload)
+            code, _, error = self.run_cli(
+                "edit",
+                "selection",
+                str(root),
+                str(second_vector_path),
+                "--kind",
+                "vector",
+                "--x",
+                "2",
+                "--y",
+                "3",
+                "--width",
+                "4",
+                "--height",
+                "3",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            second_vector_id = ObjectId.from_bytes(second_vector_payload)
+            layout = ProjectLayout(root.resolve())
+            before_refusal = read_head(layout)
+            raster_payload = bytes(range(12))
+            raster_path = directory / "selection.y8"
+            raster_path.write_bytes(raster_payload)
+            code, out, error = self.run_cli(
+                "edit",
+                "selection-raster-result",
+                str(root),
+                str(raster_path),
+                "--before-sha256",
+                first_vector_id.value,
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("before identity is stale", error)
+            self.assertEqual(read_head(layout), before_refusal)
+
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "selection-raster-result",
+                str(root),
+                str(raster_path),
+                "--before-sha256",
+                second_vector_id.value,
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            result = json.loads(out)["result"]
+            raster_id = ObjectId.from_bytes(raster_payload)
+            self.assertEqual(result["beforeSelectionSha256"], second_vector_id.value)
+            self.assertEqual(result["rasterSelectionSha256"], raster_id.value)
+            self.assertEqual(result["rasterSampleCount"], 12)
+            self.assertEqual(result["expectedRasterSampleCount"], 12)
+            self.assertFalse(result["nativeRasterizerCredited"])
+            opened = open_project(layout, default_project_limits())
+            selection = opened.generation.document.selection
+            self.assertEqual(selection.kind, SelectionKind.RASTER)
+            self.assertEqual(selection.object_id, raster_id)
+            self.assertEqual(
+                (
+                    selection.bounds.x,
+                    selection.bounds.y,
+                    selection.bounds.width,
+                    selection.bounds.height,
+                ),
+                (2, 3, 4, 3),
+            )
+
+            code, _, error = self.run_cli(
+                "edit", "mask-from-selection", str(root), pixel_id
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            masked = open_project(layout, default_project_limits())
+            mask = masked.generation.document.layer_map[LayerId(pixel_id)].mask
+            self.assertEqual(mask.object_id, raster_id)
+            self.assertEqual(mask.source_ref, raster_id)
+            self.assertEqual(mask.source, MaskSource.SELECTION)
 
     def test_pixel_stroke_result_is_revision_bound_and_refuses_stale_output(self) -> None:
         import tempfile

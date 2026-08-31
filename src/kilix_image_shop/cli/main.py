@@ -482,6 +482,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--revision-id", default=None, help="canonical UUID; generated if absent"
     )
 
+    selection_raster_result = edit_verbs.add_parser(
+        "selection-raster-result",
+        parents=[limits],
+        help="replace the checked active vector selection with supplied Y u8 samples",
+    )
+    selection_raster_result.add_argument("root", help="project root directory")
+    selection_raster_result.add_argument(
+        "raster", help="headerless rasterized selection Y u8 bytes"
+    )
+    selection_raster_result.add_argument(
+        "--before-sha256",
+        required=True,
+        help="required current vector-selection identity; stale results are refused",
+    )
+    selection_raster_result.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
     selection_clear = edit_verbs.add_parser(
         "selection-clear",
         parents=[limits],
@@ -781,6 +799,14 @@ def _dispatch(arguments: argparse.Namespace) -> commands.Outcome:
                 y=arguments.y,
                 width=arguments.width,
                 height=arguments.height,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "selection-raster-result":
+            return commands.edit_selection_raster_result_command(
+                arguments.root,
+                arguments.raster,
+                before_argument=arguments.before_sha256,
                 revision_id_argument=arguments.revision_id,
                 limits=limits,
             )

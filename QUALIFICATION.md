@@ -71,13 +71,13 @@ The 15/15 acceptance-suite rows and review instructions are mapped in
   BLOCKED at 0/3 shared-repository integrations, owned by the Kilix,
   `kilix-tui-utils` and `kilix-content` streams. This repository changes 0/3 of
   them.
-- Command-surface project mutations: MEASURED at 20/20 verbs and 13/13 causal
+- Command-surface project mutations: MEASURED at 21/21 verbs and 14/14 causal
   controls. Project create/import; group, move, remove and common layer changes;
   adjustment add/replace; mask attach/replace/paint/remove and raster-selection
   conversion; revision-bound supplied pixel-stroke results; editable text add/
   replace; supplied flatten-result commit; affine transform; canvas crop; and
-  selection set/clear all pass the 12/12 save transaction, 10/10 open
-  validation classes and 1/1 disk readback. Mask painting binds the required
+  selection set/clear/raster-result all pass the 12/12 save transaction, 10/10
+  open validation classes and 1/1 disk readback. Mask painting binds the required
   before identity, computes the exact sparse delta at 2/4 changed tiles and 2/2
   unique tile refs in the causal carrier, and refuses stale and 0/4-tile
   changes with 0/1 HEAD changes.
@@ -86,6 +86,9 @@ The 15/15 acceptance-suite rows and review instructions are mapped in
   refuses vector selections with 0/1 HEAD changes.
   Pixel-stroke results bind 1/1 source revisions, report native-painter credit
   at 0/1, and refuse stale carriers with 0/1 HEAD changes.
+  Vector-selection raster results bind 1/1 source identities and exact Y u8
+  samples, report native-rasterizer credit at 0/1, and refuse stale results
+  with 0/1 HEAD changes.
   Invalid compatibility, mask, adjustment, non-recursive group removal and
   selection-crossing crop controls also preserve 0/1 HEAD changes. The
   root-to-group reducer defect found by the earlier control is closed at 1/1

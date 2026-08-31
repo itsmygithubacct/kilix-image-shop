@@ -59,6 +59,7 @@ document revisions through the 12/12-point generation transaction:
 | `edit flatten-result` | atomically commits a supplied local flatten carrier while crediting 0/1 native renderers |
 | `edit transform`, `crop` | changes checked affine/canvas geometry without implicit resampling |
 | `edit selection`, `selection-clear` | sets or clears one bounded content-addressed selection |
+| `edit selection-raster-result ROOT RASTER --before-sha256 SHA256` | replaces a checked vector selection with exact Y u8 samples, with 0/1 native-rasterizer credit |
 | `ops providers` | the production registry exactly as I1 ships it: 0/2 adapters |
 | `ops diagnostics` | the closed 8/8 local diagnostic catalogue |
 | `export preset ROOT FORMAT [--out PATH]` | binds one deterministic preset without rendering |
@@ -83,7 +84,7 @@ by the release owner. The contained GUI is 0/1 delivered here and remains
 blocked on that selection. The `kilix-tui-utils` shell surface, the Kilix tab
 dispatch and the `kilix-content` catalog entry are 0/3 delivered here; each
 belongs to a repository this stream does not own. The toolkit-free project/edit
-path is delivered at 20/20 mutation verbs and every
+path is delivered at 21/21 mutation verbs and every
 successful mutation receives a 1/1 post-commit disk readback. Encoded image
 bytes and declared geometry/profile identities are stored without claiming a
 native decode; engine-backed rendering and export still require the profile

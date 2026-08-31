@@ -1580,6 +1580,91 @@ def edit_selection_command(
     )
 
 
+def edit_selection_raster_result_command(
+    root_argument: str,
+    raster_argument: str,
+    *,
+    before_argument: str,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Replace one checked vector selection with supplied raster samples."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    selection = opened.generation.document.selection
+    if selection is None:
+        raise CommandError("document has no selection", ExitCode.INVALID_DATA)
+    if selection.kind is not SelectionKind.VECTOR:
+        raise CommandError(
+            "selection raster result requires an active vector selection",
+            ExitCode.INVALID_DATA,
+        )
+    before_id = _object_id(before_argument, "before-selection identity")
+    if selection.object_id != before_id:
+        raise CommandError(
+            "selection raster result before identity is stale",
+            ExitCode.INVALID_DATA,
+        )
+    expected_bytes = selection.bounds.width * selection.bounds.height
+    if expected_bytes > limits.max_object_bytes:
+        raise CommandError(
+            "raster selection exceeds the object byte ceiling",
+            ExitCode.INVALID_DATA,
+        )
+    source = _resolved_file(raster_argument, "raster selection result")
+    payload = _bounded_bytes(
+        source,
+        "raster selection result",
+        expected_bytes,
+    )
+    if len(payload) != expected_bytes:
+        raise CommandError(
+            "raster selection bytes differ from its Y u8 bounds",
+            ExitCode.INVALID_DATA,
+        )
+    identity = ObjectId.from_bytes(payload)
+    reused = identity == selection.object_id
+    try:
+        command = SetSelection(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            selection=Selection(
+                SelectionKind.RASTER,
+                identity,
+                selection.bounds,
+            ),
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(
+            f"selection-raster-result arguments are invalid: {exc}",
+            ExitCode.USAGE,
+        ) from exc
+    payloads = {} if reused else {identity: payload}
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads=payloads,
+        report_name="edit.selection-raster-result",
+        detail_rows=(
+            ("beforeSelectionMatched", counted(1, 1)),
+            ("rasterSamples", counted(len(payload), expected_bytes)),
+            ("nativeRasterizerCredit", counted(0, 1)),
+        ),
+        detail_data={
+            "beforeSelectionSha256": before_id.value,
+            "rasterSelectionSha256": identity.value,
+            "rasterSampleCount": len(payload),
+            "expectedRasterSampleCount": expected_bytes,
+            "reusedObjectPayload": reused,
+            "nativeRasterizerCredited": False,
+        },
+    )
+
+
 def edit_mask_from_selection_command(
     root_argument: str,
     layer_id_argument: str,
