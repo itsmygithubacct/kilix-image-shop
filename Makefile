@@ -10,7 +10,7 @@ BIRTH_PATHS := .gitignore .python-version CHANGELOG.md LICENSE Makefile NOTICE \
 
 .DEFAULT_GOAL := check
 
-.PHONY: setup lock-check test build legal-check hygiene-check check
+.PHONY: setup lock-check test build legal-check hygiene-check check h0-core-check
 
 define verify_uv
 uv_path="$$(command -v "$(UV)")"; \
@@ -77,3 +77,7 @@ hygiene-check:
 	fi
 
 check: lock-check test build legal-check hygiene-check
+
+h0-core-check:
+	@$(SYSTEM_PYTHON) -I tools/verify_h0_capacity.py
+	@$(MAKE) --no-print-directory UV="$(UV)" check

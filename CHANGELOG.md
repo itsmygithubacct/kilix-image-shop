@@ -2,6 +2,11 @@
 
 ## 0.2.1 — local development
 
+- Add a fail-closed 8/8 H0 compute-envelope gate and an ownership-correct
+  `h0-core-check` target. It binds Debian 13, x86-64, Q35, qemu64, 2/2
+  effective CPUs, the 4 GiB memory envelope, the 40 GiB fixture disk and a
+  private caller-owned `TMPDIR` before running all 5/5 local phases; it grants
+  0/1 installed-H0 qualification credit by design.
 - Create the local-only Apache-2.0 package and its reproducible 6/6-record
   offline build lock.
 - Add the 7/7-module immutable project domain, project-v1 schema, canonical

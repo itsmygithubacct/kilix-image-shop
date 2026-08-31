@@ -61,7 +61,7 @@ make UV=/path/to/release-pinned/uv check
 .venv/bin/kilix-image-shop doctor
 ~~~
 
-The builder's latest pre-review observation is 258/258 unit tests, 2/2 build
+The builder's latest pre-review observation is 265/265 unit tests, 2/2 build
 artifacts, 3/3 legal carriers, 5/5 aggregate phases, and 45/45 functional
 modules. The two command invocations are the installed console-script path:
 `version` exits 0, and `doctor` exits 3 on any host without the complete OD-7

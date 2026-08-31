@@ -39,7 +39,7 @@ records, installed-H0 behavior, or release admission.
 
 ## Local builder evidence
 
-The local aggregate gate covers 5/5 phases and currently reports 258/258 unit
+The local aggregate gate covers 5/5 phases and currently reports 265/265 unit
 tests, 2/2 distribution artifacts, and 3/3 legal carriers. The wheel installs
 1/1 console script, `kilix-image-shop`, whose readiness verb exits non-zero
 until the complete OD-7 package group is installed. The exact committed
