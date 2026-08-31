@@ -61,7 +61,7 @@ make UV=/path/to/release-pinned/uv check
 .venv/bin/kilix-image-shop doctor
 ~~~
 
-The builder's latest pre-review observation is 256/256 unit tests, 2/2 build
+The builder's latest pre-review observation is 258/258 unit tests, 2/2 build
 artifacts, 3/3 legal carriers, 5/5 aggregate phases, and 45/45 functional
 modules. The two command invocations are the installed console-script path:
 `version` exits 0, and `doctor` exits 3 on any host without the complete OD-7
@@ -100,13 +100,16 @@ fakes may support a code verdict but receive 0/1 installed-H0 evidence credit.
 
 The command surface deliberately stops short of native pixel work. It carries
 0/1 rendered exports and 0/1 engine starts, while stored-document mutations are
-measured at 15/15 verbs with 9/9 causal controls. Creation/import, layer-tree,
-adjustment, mask attach/paint/remove, transform, crop and selection commits all
-use validated commands, the 12/12 save transaction, 10/10 open validation
-classes and 1/1 disk readback. Mask paint also binds 1/1 before identities,
-reports its exact sparse changed-tile population and preserves 0/1 HEAD changes
-for stale results and 0/4-tile no-op results. The contained GUI, TUI shell and Kilix tab dispatch
-remain outside this repository at their own gates.
+measured at 18/18 verbs with 11/11 causal controls. Creation/import, layer-tree,
+adjustment, mask attach/paint/remove, editable text, supplied flatten results,
+transform, crop and selection commits all use validated commands, the 12/12
+save transaction, 10/10 open validation classes and 1/1 disk readback. Mask
+paint also binds 1/1 before identities, reports its exact sparse changed-tile
+population and preserves 0/1 HEAD changes for stale results and 0/4-tile no-op
+results. Text pins 1/1 copied font objects and declared previews. Flatten
+requires sibling sources and grants 0/1 native-renderer credit. The contained
+GUI, TUI shell and Kilix tab dispatch remain outside this repository at their
+own gates.
 
 ## Required independent disposition
 

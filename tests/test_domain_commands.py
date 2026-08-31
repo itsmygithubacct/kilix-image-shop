@@ -366,23 +366,28 @@ class AssetTextFlattenAndOperationCommandTests(unittest.TestCase):
 
     def test_edit_text_preserves_editable_font_identity(self) -> None:
         state = sample_document()
+        command = EditText(
+            expected_revision=state.revision_id,
+            new_revision=revision(1),
+            layer_id=layer_id(3),
+            text="Changed",
+            layout=TextLayout(32, 16, TextAlignment.END, "en"),
+            font_digest=object_id("f"),
+            face_index=1,
+            axes=(FontAxis("wght", 700),),
+            fallbacks=(FontFallback("A", "B", None, "fixture"),),
+            preview_asset_digest=object_id("7"),
+        )
+        with self.assertRaises(CommandValidationError):
+            reduce_command(state, command)
         result = reduce_command(
             state,
-            EditText(
-                expected_revision=state.revision_id,
-                new_revision=revision(1),
-                layer_id=layer_id(3),
-                text="Changed",
-                layout=TextLayout(32, 16, TextAlignment.END, "en"),
-                font_digest=object_id("a"),
-                face_index=1,
-                axes=(FontAxis("wght", 700),),
-                fallbacks=(FontFallback("A", "B", None, "fixture"),),
-                preview_asset_digest=object_id("7"),
-            ),
+            command,
+            ReductionContext((ResolvedObject(object_id("f"), 123),)),
         )
         layer = result.state.layer_map[layer_id(3)]
         self.assertEqual((layer.text, layer.face_index), ("Changed", 1))  # type: ignore[union-attr]
+        self.assertEqual(result.effects[0].kind, EffectKind.WRITE_OBJECT)
 
     def test_flatten_replaces_sibling_subtrees_with_one_pixel_layer(self) -> None:
         state = sample_document()

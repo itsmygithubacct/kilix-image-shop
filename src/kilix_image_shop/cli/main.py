@@ -9,7 +9,7 @@ from typing import Sequence, TextIO
 
 from kilix_image_shop.domain.assets import MediaType
 from kilix_image_shop.domain.color import ColourSpace
-from kilix_image_shop.domain.layers import AdjustmentId, BlendMode
+from kilix_image_shop.domain.layers import AdjustmentId, BlendMode, TextAlignment
 from kilix_image_shop.store.layout import ProjectLimits, StoreError
 
 from . import commands
@@ -39,6 +39,33 @@ def _limit_parent() -> argparse.ArgumentParser:
             help="override one finite project ceiling",
         )
     return parent
+
+
+def _add_editable_text_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("font", help="project-owned font carrier")
+    parser.add_argument("--text", required=True, help="complete editable text content")
+    parser.add_argument(
+        "--preview-asset-sha256",
+        required=True,
+        help="already-declared preview asset identity",
+    )
+    parser.add_argument("--width", type=int, required=True, help="text layout width")
+    parser.add_argument("--height", type=int, required=True, help="text layout height")
+    parser.add_argument(
+        "--alignment",
+        choices=tuple(item.value for item in TextAlignment),
+        default=TextAlignment.START.value,
+        help="closed text alignment",
+    )
+    parser.add_argument("--language", default="und", help="bounded language identity")
+    parser.add_argument("--face-index", type=int, default=0, help="font face index")
+    parser.add_argument(
+        "--axis",
+        action="append",
+        default=[],
+        metavar="TAG=NUMBER",
+        help="repeat for each pinned variable-font axis",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -242,6 +269,62 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
     group.add_argument("--parent-id", default=None, help="optional group-layer UUID")
     group.add_argument("--index", type=int, default=0, help="zero-based insertion index")
+
+    text = edit_verbs.add_parser(
+        "text",
+        parents=[limits],
+        help="add editable text with a copied pinned font",
+    )
+    text.add_argument("root", help="project root directory")
+    _add_editable_text_arguments(text)
+    text.add_argument("--name", default="Text", help="layer name")
+    text.add_argument("--layer-id", default=None, help="canonical UUID; generated if absent")
+    text.add_argument("--revision-id", default=None, help="canonical UUID; generated if absent")
+    text.add_argument("--parent-id", default=None, help="optional group-layer UUID")
+    text.add_argument("--index", type=int, default=0, help="zero-based insertion index")
+
+    text_set = edit_verbs.add_parser(
+        "text-set",
+        parents=[limits],
+        help="replace editable text and its primary font/layout identity",
+    )
+    text_set.add_argument("root", help="project root directory")
+    text_set.add_argument("layer", help="target text-layer UUID")
+    _add_editable_text_arguments(text_set)
+    text_set.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
+
+    flatten_result = edit_verbs.add_parser(
+        "flatten-result",
+        parents=[limits],
+        help="commit an already-rendered local flatten result",
+    )
+    flatten_result.add_argument("root", help="project root directory")
+    flatten_result.add_argument("carrier", help="encoded flatten output carrier")
+    flatten_result.add_argument(
+        "--source-layer",
+        action="append",
+        default=[],
+        required=True,
+        help="repeat in sibling flatten order",
+    )
+    flatten_result.add_argument(
+        "--media-type",
+        choices=tuple(item.value for item in MediaType),
+        required=True,
+        help="declared closed media type",
+    )
+    flatten_result.add_argument("--width", type=int, required=True, help="decoded width")
+    flatten_result.add_argument("--height", type=int, required=True, help="decoded height")
+    flatten_result.add_argument("--profile-sha256", required=True, help="profile identity")
+    flatten_result.add_argument("--name", default="Flattened", help="output layer name")
+    flatten_result.add_argument(
+        "--layer-id", default=None, help="canonical output UUID; generated if absent"
+    )
+    flatten_result.add_argument(
+        "--revision-id", default=None, help="canonical UUID; generated if absent"
+    )
 
     adjustment_set = edit_verbs.add_parser(
         "adjustment-set",
@@ -507,6 +590,55 @@ def _dispatch(arguments: argparse.Namespace) -> commands.Outcome:
                 revision_id_argument=arguments.revision_id,
                 parent_id_argument=arguments.parent_id,
                 index=arguments.index,
+                limits=limits,
+            )
+        if verb == "text":
+            return commands.edit_text_command(
+                arguments.root,
+                arguments.font,
+                text=arguments.text,
+                width=arguments.width,
+                height=arguments.height,
+                alignment_argument=arguments.alignment,
+                language=arguments.language,
+                face_index=arguments.face_index,
+                axis_arguments=tuple(arguments.axis),
+                preview_argument=arguments.preview_asset_sha256,
+                name=arguments.name,
+                layer_id_argument=arguments.layer_id,
+                revision_id_argument=arguments.revision_id,
+                parent_id_argument=arguments.parent_id,
+                index=arguments.index,
+                limits=limits,
+            )
+        if verb == "text-set":
+            return commands.edit_text_set_command(
+                arguments.root,
+                arguments.layer,
+                arguments.font,
+                text=arguments.text,
+                width=arguments.width,
+                height=arguments.height,
+                alignment_argument=arguments.alignment,
+                language=arguments.language,
+                face_index=arguments.face_index,
+                axis_arguments=tuple(arguments.axis),
+                preview_argument=arguments.preview_asset_sha256,
+                revision_id_argument=arguments.revision_id,
+                limits=limits,
+            )
+        if verb == "flatten-result":
+            return commands.edit_flatten_result_command(
+                arguments.root,
+                arguments.carrier,
+                source_layer_arguments=tuple(arguments.source_layer),
+                media_type_argument=arguments.media_type,
+                width=arguments.width,
+                height=arguments.height,
+                profile_argument=arguments.profile_sha256,
+                name=arguments.name,
+                layer_id_argument=arguments.layer_id,
+                revision_id_argument=arguments.revision_id,
                 limits=limits,
             )
         if verb == "adjustment-set":

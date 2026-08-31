@@ -39,7 +39,7 @@ records, installed-H0 behavior, or release admission.
 
 ## Local builder evidence
 
-The local aggregate gate covers 5/5 phases and currently reports 256/256 unit
+The local aggregate gate covers 5/5 phases and currently reports 258/258 unit
 tests, 2/2 distribution artifacts, and 3/3 legal carriers. The wheel installs
 1/1 console script, `kilix-image-shop`, whose readiness verb exits non-zero
 until the complete OD-7 package group is installed. The exact committed
@@ -71,10 +71,11 @@ The 15/15 acceptance-suite rows and review instructions are mapped in
   BLOCKED at 0/3 shared-repository integrations, owned by the Kilix,
   `kilix-tui-utils` and `kilix-content` streams. This repository changes 0/3 of
   them.
-- Command-surface project mutations: MEASURED at 15/15 verbs and 9/9 causal
+- Command-surface project mutations: MEASURED at 18/18 verbs and 11/11 causal
   controls. Project create/import; group, move, remove and common layer changes;
-  adjustment add/replace; mask attach/replace/paint/remove; affine transform; canvas
-  crop; and selection set/clear all pass the 12/12 save transaction, 10/10 open
+  adjustment add/replace; mask attach/replace/paint/remove; editable text add/
+  replace; supplied flatten-result commit; affine transform; canvas crop; and
+  selection set/clear all pass the 12/12 save transaction, 10/10 open
   validation classes and 1/1 disk readback. Mask painting binds the required
   before identity, computes the exact sparse delta at 2/4 changed tiles and 2/2
   unique tile refs in the causal carrier, and refuses stale and 0/4-tile
@@ -82,8 +83,12 @@ The 15/15 acceptance-suite rows and review instructions are mapped in
   Invalid compatibility, mask, adjustment, non-recursive group removal and
   selection-crossing crop controls also preserve 0/1 HEAD changes. The
   root-to-group reducer defect found by the earlier control is closed at 1/1
-  regression tests. This is stored-document credit, not native decode/render/
-  export credit.
+  regression tests. Text mutations require 1/1 copied primary-font objects and
+  1/1 declared preview assets; absent font metadata and undeclared previews
+  preserve 0/1 HEAD changes. Flatten requires all supplied sources to be
+  siblings and reports native-renderer credit at 0/1; its control also closes
+  1/1 parser destination collisions. This is stored-document credit, not native
+  decode/render/export credit.
 - Native profile-backed command session: BLOCKED at 0/1 on the profile-object
   source. The project object closure deliberately excludes working and asset
   profile objects, and the package group carries `liblcms2-2` but 0/1 ICC

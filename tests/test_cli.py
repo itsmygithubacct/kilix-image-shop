@@ -29,7 +29,7 @@ from kilix_image_shop.domain.assets import AssetRef, ImportPolicy, MediaType
 from kilix_image_shop.domain.document import PROJECT_SCHEMA, DocumentState
 from kilix_image_shop.domain.geometry import Canvas
 from kilix_image_shop.domain.identifiers import DocumentId, LayerId, ObjectId, RevisionId
-from kilix_image_shop.domain.layers import PixelLayer
+from kilix_image_shop.domain.layers import PixelLayer, TextLayer
 from kilix_image_shop.export.presets import ExportFormat, ExportPreset, deterministic_preset
 from kilix_image_shop.export.provenance import ExportArtifact, ExportProvenance
 from kilix_image_shop.store.generations import GenerationStore, create_project
@@ -547,6 +547,206 @@ class CommandMutationTests(CliHarness):
             self.assertEqual(out, "")
             self.assertIn("stale", error)
             self.assertEqual(read_head(layout), accepted_head)
+
+    def test_editable_text_add_and_update_pin_font_objects_and_preview(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            self.import_pixels(directory, root)
+            first_font_payload = b"synthetic-font-v1"
+            first_font = directory / "font-v1.otf"
+            first_font.write_bytes(first_font_payload)
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "text",
+                str(root),
+                str(first_font),
+                "--text",
+                "Editable caption",
+                "--preview-asset-sha256",
+                ASSET_DIGEST.value,
+                "--width",
+                "32",
+                "--height",
+                "16",
+                "--axis",
+                "wght=500",
+                "--index",
+                "1",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            added = json.loads(out)["result"]
+            text_id = added["changedLayerIds"][0]
+            self.assertEqual(added["fontSha256"], ObjectId.from_bytes(first_font_payload).value)
+            self.assertEqual(added["fontAxisCount"], 1)
+            self.assertTrue(added["readbackVerified"])
+
+            second_font_payload = b"synthetic-font-v2"
+            second_font = directory / "font-v2.otf"
+            second_font.write_bytes(second_font_payload)
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "text-set",
+                str(root),
+                text_id,
+                str(second_font),
+                "--text",
+                "Updated caption",
+                "--preview-asset-sha256",
+                ASSET_DIGEST.value,
+                "--width",
+                "48",
+                "--height",
+                "20",
+                "--alignment",
+                "center",
+                "--language",
+                "en",
+                "--face-index",
+                "1",
+                "--axis",
+                "wght=700",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            changed = json.loads(out)["result"]
+            second_digest = ObjectId.from_bytes(second_font_payload)
+            self.assertEqual(changed["fontSha256"], second_digest.value)
+
+            layout = ProjectLayout(root.resolve())
+            opened = open_project(layout, default_project_limits())
+            layer = opened.generation.document.layer_map[LayerId(text_id)]
+            self.assertIsInstance(layer, TextLayer)
+            self.assertEqual(layer.text, "Updated caption")
+            self.assertEqual(layer.font_digest, second_digest)
+            self.assertEqual(layer.face_index, 1)
+            self.assertEqual(layer.preview_asset_digest, ASSET_DIGEST)
+            self.assertIn(second_digest, {item.object_id for item in opened.generation.objects})
+
+            accepted_head = read_head(layout)
+            code, out, error = self.run_cli(
+                "edit",
+                "text-set",
+                str(root),
+                text_id,
+                str(second_font),
+                "--text",
+                "Uncommitted",
+                "--preview-asset-sha256",
+                "f" * 64,
+                "--width",
+                "48",
+                "--height",
+                "20",
+            )
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("preview asset", error)
+            self.assertEqual(read_head(layout), accepted_head)
+
+    def test_flatten_result_requires_siblings_and_credits_zero_renderers(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            root = self.create_empty_project(directory)
+            pixel_id = self.import_pixels(directory, root)
+            code, out, error = self.run_cli(
+                "--output",
+                "json",
+                "edit",
+                "adjustment",
+                str(root),
+                "exposure",
+                "--parameter",
+                "stops=0.5",
+                "--index",
+                "1",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            adjustment_id = json.loads(out)["result"]["changedLayerIds"][0]
+            code, out, error = self.run_cli(
+                "--output", "json", "edit", "group", str(root), "--index", "2"
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            group_id = json.loads(out)["result"]["changedLayerIds"][0]
+            code, _, error = self.run_cli(
+                "edit",
+                "layer-move",
+                str(root),
+                adjustment_id,
+                "--parent-id",
+                group_id,
+                "--index",
+                "0",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+
+            output_payload = b"synthetic-flattened-png"
+            output_path = directory / "flattened.png"
+            output_path.write_bytes(output_payload)
+            flatten_arguments = (
+                "edit",
+                "flatten-result",
+                str(root),
+                str(output_path),
+                "--source-layer",
+                pixel_id,
+                "--source-layer",
+                adjustment_id,
+                "--media-type",
+                "image/png",
+                "--width",
+                "64",
+                "--height",
+                "48",
+                "--profile-sha256",
+                "1" * 64,
+            )
+            layout = ProjectLayout(root.resolve())
+            before = read_head(layout)
+            code, out, error = self.run_cli(*flatten_arguments)
+            self.assertEqual(code, int(ExitCode.INVALID_DATA))
+            self.assertEqual(out, "")
+            self.assertIn("siblings", error)
+            self.assertEqual(read_head(layout), before)
+
+            code, _, error = self.run_cli(
+                "edit",
+                "layer-move",
+                str(root),
+                adjustment_id,
+                "--index",
+                "1",
+            )
+            self.assertEqual(code, int(ExitCode.OK), error)
+            code, out, error = self.run_cli("--output", "json", *flatten_arguments)
+            self.assertEqual(code, int(ExitCode.OK), error)
+            result = json.loads(out)["result"]
+            self.assertFalse(result["nativeRendererCredited"])
+            self.assertEqual(result["sourceLayerIds"], [pixel_id, adjustment_id])
+            self.assertEqual(
+                result["outputAssetSha256"],
+                ObjectId.from_bytes(output_payload).value,
+            )
+            self.assertTrue(result["readbackVerified"])
+
+            opened = open_project(layout, default_project_limits())
+            document = opened.generation.document
+            self.assertEqual(len(document.layers), 2)
+            output = next(
+                layer
+                for layer in document.layers
+                if isinstance(layer, PixelLayer)
+                and layer.asset_digest == ObjectId.from_bytes(output_payload)
+            )
+            self.assertEqual(document.root_layer_ids[0], output.layer_id)
+            self.assertEqual(document.root_layer_ids[1], LayerId(group_id))
 
     def test_create_import_adjust_mask_and_layer_changes_commit_end_to_end(self) -> None:
         import tempfile

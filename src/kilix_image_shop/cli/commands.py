@@ -15,6 +15,7 @@ from kilix_image_shop.domain.commands import (
     AttachMask,
     ChangeAdjustment,
     CropCanvas,
+    FlattenLayers,
     ImportAsset,
     RemoveLayer,
     ReorderLayer,
@@ -38,16 +39,27 @@ from kilix_image_shop.domain.layers import (
     AdjustmentId,
     AdjustmentLayer,
     BlendMode,
+    FontAxis,
+    FontFallback,
     GroupLayer,
     MaskObject,
     MaskSource,
     PixelLayer,
     Selection,
     SelectionKind,
+    TextAlignment,
     TextLayer,
+    TextLayout,
 )
 from kilix_image_shop.editing.adjustments import make_adjustment
 from kilix_image_shop.editing.masking import paint_mask
+from kilix_image_shop.editing.text import (
+    EditableText,
+    TextValidationError,
+    add_text_layer,
+    edit_text_layer,
+    font_digest,
+)
 from kilix_image_shop.engine import compatibility
 from kilix_image_shop.engine.api import mask_digest_index
 from kilix_image_shop.export.presets import (
@@ -274,6 +286,64 @@ def _parameter_map(arguments: tuple[str, ...]) -> dict[str, object]:
             )
         values[name] = value
     return values
+
+
+def _font_axes(arguments: tuple[str, ...]) -> tuple[FontAxis, ...]:
+    values: dict[str, FontAxis] = {}
+    for argument in arguments:
+        tag, separator, raw = argument.partition("=")
+        if not separator or not tag or tag in values:
+            raise CommandError(
+                "font axes must be unique TAG=NUMBER pairs",
+                ExitCode.USAGE,
+            )
+        try:
+            values[tag] = FontAxis(tag, float(raw))
+        except (TypeError, ValueError) as exc:
+            raise CommandError(
+                f"font axis {tag!r} is invalid: {exc}",
+                ExitCode.USAGE,
+            ) from exc
+    return tuple(sorted(values.values(), key=lambda item: item.tag))
+
+
+def _editable_text(
+    font_payload: bytes,
+    *,
+    text: str,
+    width: int,
+    height: int,
+    alignment_argument: str,
+    language: str,
+    face_index: int,
+    axis_arguments: tuple[str, ...],
+    preview_argument: str,
+    fallbacks: tuple[FontFallback, ...] = (),
+) -> EditableText:
+    if not font_payload:
+        raise CommandError("font carrier is empty", ExitCode.INVALID_DATA)
+    try:
+        return EditableText(
+            text=text,
+            layout=TextLayout(
+                width,
+                height,
+                TextAlignment(alignment_argument),
+                language,
+            ),
+            font_digest=font_digest(font_payload),
+            face_index=face_index,
+            axes=_font_axes(axis_arguments),
+            fallbacks=fallbacks,
+            preview_asset_digest=_object_id(
+                preview_argument,
+                "text preview asset identity",
+            ),
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"editable text arguments are invalid: {exc}", ExitCode.USAGE) from exc
 
 
 def _opened(root: pathlib.Path, limits: ProjectLimits) -> OpenedProject:
@@ -970,6 +1040,213 @@ def edit_group_command(
         command,
         payloads={},
         report_name="edit.group",
+    )
+
+
+def edit_text_command(
+    root_argument: str,
+    font_argument: str,
+    *,
+    text: str,
+    width: int,
+    height: int,
+    alignment_argument: str,
+    language: str,
+    face_index: int,
+    axis_arguments: tuple[str, ...],
+    preview_argument: str,
+    name: str,
+    layer_id_argument: str | None,
+    revision_id_argument: str | None,
+    parent_id_argument: str | None,
+    index: int,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Add editable text with one copied pinned font and declared preview asset."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    font_source = _resolved_file(font_argument, "font carrier")
+    font_payload = _bounded_bytes(font_source, "font carrier", limits.max_object_bytes)
+    try:
+        layer_id = _layer_id(layer_id_argument)
+        editable = _editable_text(
+            font_payload,
+            text=text,
+            width=width,
+            height=height,
+            alignment_argument=alignment_argument,
+            language=language,
+            face_index=face_index,
+            axis_arguments=axis_arguments,
+            preview_argument=preview_argument,
+        )
+        command = add_text_layer(
+            opened.generation.document,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=layer_id,
+            name=name,
+            editable=editable,
+            parent_id=_optional_layer_id(parent_id_argument, "parent layer identity"),
+            index=index,
+        )
+    except CommandError:
+        raise
+    except TextValidationError as exc:
+        raise CommandError(f"text cannot be added: {exc}", ExitCode.INVALID_DATA) from exc
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"text arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={editable.font_digest: font_payload},
+        report_name="edit.text",
+        detail_rows=(
+            ("fontObject", counted(1, 1)),
+            ("fontAxes", counted(len(editable.axes), len(editable.axes))),
+        ),
+        detail_data={
+            "fontSha256": editable.font_digest.value,
+            "fontAxisCount": len(editable.axes),
+            "previewAssetSha256": editable.preview_asset_digest.value,
+        },
+    )
+
+
+def edit_text_set_command(
+    root_argument: str,
+    layer_id_argument: str,
+    font_argument: str,
+    *,
+    text: str,
+    width: int,
+    height: int,
+    alignment_argument: str,
+    language: str,
+    face_index: int,
+    axis_arguments: tuple[str, ...],
+    preview_argument: str,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Replace editable text and its complete primary-font/layout identity."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    font_source = _resolved_file(font_argument, "font carrier")
+    font_payload = _bounded_bytes(font_source, "font carrier", limits.max_object_bytes)
+    try:
+        layer_id = _layer_id(layer_id_argument)
+        current = opened.generation.document.layer_map.get(layer_id)
+        editable = _editable_text(
+            font_payload,
+            text=text,
+            width=width,
+            height=height,
+            alignment_argument=alignment_argument,
+            language=language,
+            face_index=face_index,
+            axis_arguments=axis_arguments,
+            preview_argument=preview_argument,
+            fallbacks=() if not isinstance(current, TextLayer) else current.fallbacks,
+        )
+        command = edit_text_layer(
+            opened.generation.document,
+            new_revision=_revision_id(revision_id_argument),
+            layer_id=layer_id,
+            editable=editable,
+        )
+    except CommandError:
+        raise
+    except TextValidationError as exc:
+        raise CommandError(f"text cannot be changed: {exc}", ExitCode.INVALID_DATA) from exc
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"text-set arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={editable.font_digest: font_payload},
+        report_name="edit.text-set",
+        detail_rows=(
+            ("fontObject", counted(1, 1)),
+            ("fontAxes", counted(len(editable.axes), len(editable.axes))),
+        ),
+        detail_data={
+            "fontSha256": editable.font_digest.value,
+            "fontAxisCount": len(editable.axes),
+            "previewAssetSha256": editable.preview_asset_digest.value,
+        },
+    )
+
+
+def edit_flatten_result_command(
+    root_argument: str,
+    output_argument: str,
+    *,
+    source_layer_arguments: tuple[str, ...],
+    media_type_argument: str,
+    width: int,
+    height: int,
+    profile_argument: str,
+    name: str,
+    layer_id_argument: str | None,
+    revision_id_argument: str | None,
+    limits: ProjectLimits,
+) -> Outcome:
+    """Commit one completed local flatten result without claiming renderer credit."""
+
+    root = _resolved_directory(root_argument, "project root")
+    opened = _opened(root, limits)
+    output_source = _resolved_file(output_argument, "flatten output")
+    payload = _bounded_bytes(output_source, "flatten output", limits.max_object_bytes)
+    identity = ObjectId.from_bytes(payload)
+    try:
+        source_ids = tuple(
+            _layer_id(item, "flatten source layer identity")
+            for item in source_layer_arguments
+        )
+        output_asset = AssetRef(
+            digest=identity,
+            byte_count=len(payload),
+            media_type=MediaType(media_type_argument),
+            width=width,
+            height=height,
+            profile_digest=_object_id(profile_argument, "flatten profile identity"),
+            import_policy=ImportPolicy.COPIED,
+        )
+        output_layer = PixelLayer(
+            layer_id=_layer_id(layer_id_argument, "flatten output layer identity"),
+            name=name,
+            asset_digest=identity,
+        )
+        command = FlattenLayers(
+            expected_revision=opened.generation.document.revision_id,
+            new_revision=_revision_id(revision_id_argument),
+            source_layer_ids=source_ids,
+            output_asset=output_asset,
+            output_layer=output_layer,
+        )
+    except CommandError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise CommandError(f"flatten-result arguments are invalid: {exc}", ExitCode.USAGE) from exc
+    return _commit_edit(
+        root_argument,
+        limits,
+        command,
+        payloads={identity: payload},
+        report_name="edit.flatten-result",
+        detail_rows=(
+            ("sourceLayers", counted(len(source_ids), len(source_ids))),
+            ("renderCredit", counted(0, 1)),
+        ),
+        detail_data={
+            "sourceLayerIds": [item.value for item in source_ids],
+            "outputAssetSha256": identity.value,
+            "nativeRendererCredited": False,
+        },
     )
 
 

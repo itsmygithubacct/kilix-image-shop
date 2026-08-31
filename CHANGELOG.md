@@ -27,11 +27,12 @@
   generation listing, previewed recovery and collection, the operation registry
   and diagnostic catalogue, deterministic preset binding, and sidecar
   verification, with a 5/5 closed exit-status set and canonical JSON output.
-- Ship 15/15 toolkit-free project/edit mutation verbs: project create/import;
+- Ship 18/18 toolkit-free project/edit mutation verbs: project create/import;
   group, move, remove and common layer changes; adjustment add/replace; mask
-  attach/replace/paint/remove; affine transform; canvas crop; and selection set/clear.
+  attach/replace/paint/remove; editable text add/replace; supplied flatten-result
+  commit; affine transform; canvas crop; and selection set/clear.
   Every successful mutation runs the 12/12 save transaction, all 10/10 open
-  validation classes, and 1/1 post-commit disk readback; 9/9 causal controls
+  validation classes, and 1/1 post-commit disk readback; 11/11 causal controls
   cover the complete flow and fail-closed cases. Mask paint binds 1/1 current
   mask identities, reports an exact sparse changed-tile population and refuses
   stale or no-op results with 0/1 HEAD changes.
@@ -42,7 +43,7 @@
   45/45 modules and the acceptance-suite map from 14/14 to 15/15.
 - Retain 0/2 production provider adapters and 0/1 GUI toolkit selections until
   their separately owned gates open. The command surface commits document
-  mutations at 15/15 verbs but renders 0/1 pixels; native rendering waits on the
+  mutations at 18/18 verbs but renders 0/1 pixels; native rendering waits on the
   gates recorded in `QUALIFICATION.md`.
 - Record the publication boundary the owner authorized: `work/*` and `archive/*`
   refs to one private remote, published by explicit URL with 0/0 configured

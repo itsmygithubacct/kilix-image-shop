@@ -352,6 +352,13 @@ def _known_object_ids(state: DocumentState) -> set[ObjectId]:
             known.add(mask.object_id)
             if mask.source_ref is not None:
                 known.add(mask.source_ref)
+        if isinstance(layer, TextLayer):
+            known.add(layer.font_digest)
+            known.update(
+                fallback.resolved_font_digest
+                for fallback in layer.fallbacks
+                if fallback.resolved_font_digest is not None
+            )
     return known
 
 
@@ -384,6 +391,45 @@ def _require_reference(
         raise CommandValidationError(
             f"referenced object {object_id} has no resolved local metadata"
         )
+
+
+def _reference_write_effect(
+    state: DocumentState,
+    context: ReductionContext,
+    object_id: ObjectId,
+) -> CommandEffect | None:
+    if object_id in _known_object_ids(state):
+        return None
+    resolved = context.object_map.get(object_id)
+    if resolved is None:
+        raise CommandValidationError(
+            f"referenced object {object_id} has no resolved local metadata"
+        )
+    return CommandEffect(
+        EffectKind.WRITE_OBJECT,
+        object_id=resolved.object_id,
+        byte_count=resolved.byte_count,
+    )
+
+
+def _text_object_effects(
+    state: DocumentState,
+    context: ReductionContext,
+    font_digest: ObjectId,
+    fallbacks: tuple[FontFallback, ...],
+) -> tuple[CommandEffect, ...]:
+    identities = {font_digest}
+    identities.update(
+        fallback.resolved_font_digest
+        for fallback in fallbacks
+        if fallback.resolved_font_digest is not None
+    )
+    effects: list[CommandEffect] = []
+    for object_id in sorted(identities, key=lambda item: item.value):
+        effect = _reference_write_effect(state, context, object_id)
+        if effect is not None:
+            effects.append(effect)
+    return tuple(effects)
 
 
 def _mask_effect(
@@ -537,6 +583,15 @@ def reduce_command(
             state, command.layer, command.parent_id, command.index
         )
         effects.extend(_mask_effect(state, context, getattr(command.layer, "mask", None)))
+        if isinstance(command.layer, TextLayer):
+            effects.extend(
+                _text_object_effects(
+                    state,
+                    context,
+                    command.layer.font_digest,
+                    command.layer.fallbacks,
+                )
+            )
         candidate = _document(state, command.new_revision, layers=layers, roots=roots)
         changed = (command.layer.layer_id,)
 
@@ -704,6 +759,14 @@ def reduce_command(
             raise CommandValidationError("target layer is not text")
         if command.preview_asset_digest not in state.asset_map:
             raise CommandValidationError("text preview asset is undeclared")
+        effects.extend(
+            _text_object_effects(
+                state,
+                context,
+                command.font_digest,
+                command.fallbacks,
+            )
+        )
         layers[command.layer_id] = replace(
             layer,
             text=command.text,
