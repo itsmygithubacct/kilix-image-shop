@@ -137,8 +137,9 @@ code enforces them are in [ARCHITECTURE-INVARIANTS.md](ARCHITECTURE-INVARIANTS.m
 - [kilix](https://github.com/itsmygithubacct/kilix#readme): carries the Kilix
   for Windows WSL catalog entry for Image Shop.
 - [kilix-background-remover](https://github.com/itsmygithubacct/kilix-background-remover#readme):
-  the F108 cutout provider candidate, whose installed provider port serves this
-  core's editable-mask operation.
+  the F108 cutout provider candidate, whose provider port is built for this
+  core's editable-mask operation; the round trip is still blocked here (0/2
+  production providers, see [QUALIFICATION.md](QUALIFICATION.md)).
 - [kilix-tui-utils](https://github.com/itsmygithubacct/kilix-tui-utils#readme)
   and [kilix-content](https://github.com/itsmygithubacct/kilix-content#readme):
   where the shell surface and catalog entry would live; neither is delivered.
